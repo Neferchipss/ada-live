@@ -102,7 +102,7 @@ let wsBackoff = 2000;
 let wsLive = false;
 
 function connectRelay() {
-  if (!config.relayUrl || ws) return;
+  if (!config.relayUrl || ws || paused) return;
   try { ws = new WebSocket(`${config.relayUrl.replace(/^http/, 'ws').replace(/\/$/, '')}/ws?role=viewer`); }
   catch { ws = null; return; }
   ws.onopen = () => { wsBackoff = 2000; wsLive = true; clearTimeout(timer); };
@@ -132,9 +132,11 @@ function disconnectRelay() {
   wsLive = false;
 }
 
+let paused = false;
+
 async function poll() {
   clearTimeout(timer);
-  if (wsLive) return;
+  if (wsLive || paused) return;
   try {
     const env = await fetchEnvelope();
     const tag = env.iv;
@@ -424,7 +426,7 @@ function renderLog() {
 // Refresh relative times and the connection badge every few seconds.
 function tickClock() {
   document.querySelectorAll('[data-ago]').forEach((el) => { el.textContent = ago(Number(el.dataset.ago)); });
-  if (!data) return;
+  if (!data || paused) return;
   const age = Date.now() - (data.generatedAt || 0);
   if (!lastFetchOk) return;
   if (wsLive && age < 20e3) setConn('rt', 'realtime');
@@ -516,7 +518,19 @@ async function boot() {
     document.querySelectorAll('#kind-filter button').forEach((x) => x.classList.toggle('on', x === b));
     renderWork();
   });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && data) poll(); });
+  // A tab hidden for a minute disconnects (so the laptop stops streaming and GitHub
+  // isn't polled); it reconnects the moment it's visible again.
+  let hideTimer = null;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      hideTimer = setTimeout(() => { paused = true; clearTimeout(timer); disconnectRelay(); setConn('', 'paused'); }, 60e3);
+      return;
+    }
+    clearTimeout(hideTimer);
+    if (!keyCache.key || !data) return;
+    if (paused) { paused = false; connectRelay(); }
+    poll();
+  });
   setInterval(tickClock, 5000);
 
   if (!crypto.subtle) {
