@@ -79,7 +79,8 @@ function snapshot() {
   const claude = collectClaude();
   const codex = collectCodex();
   const tasks = collectTasks();
-  const sessions = [...claude, ...codex].sort((a, b) => b.lastActivity - a.lastActivity);
+  const hidden = hub?.headSessions() || new Set();
+  const sessions = [...claude, ...codex].filter((x) => !hidden.has(x.id)).sort((a, b) => b.lastActivity - a.lastActivity);
 
   const projects = work.list();
   // Attach which agents are working in each project.
@@ -96,7 +97,7 @@ function snapshot() {
     v: 1,
     host: os.hostname(),
     workRoot: cfg.workRoot,
-    ada: presence(claude),
+    ada: presence(claude.filter((x) => !hidden.has(x.id))),
     sessions: sessions.map(({ steps, ...s }) => ({ ...s, steps: steps.slice(-8) })),
     tasks,
     timeline: timeline(sessions, tasks),

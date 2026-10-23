@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=mvlhtm7p">
 </head>
 <body>
   <!-- Locked: nothing below is readable until the password decrypts the feed. -->
@@ -55,22 +55,58 @@
     </section>
 
     <section class="view chat-view" id="view-chat" data-view="chat" hidden>
-      <div class="chat-bar">
-        <select id="chat-thread" aria-label="Conversation"></select>
-        <button id="chat-archive" class="ghost" type="button" aria-label="Close this chat">Close</button>
-      </div>
-      <div class="chat-brain" id="chat-brain"></div>
+      <header class="chat-head">
+        <span class="ch-av"><svg viewBox="0 0 64 64"><path d="M32 6 58 56H6Z" fill="none" stroke="currentColor" stroke-width="5"/><circle cx="32" cy="40" r="6" fill="currentColor"/></svg></span>
+        <div class="ch-title"><b>Ada</b><span id="chat-sub">safe mode</span></div>
+        <button id="chat-menu" class="icon-btn" type="button" aria-label="Chat options"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
+      </header>
       <ol class="chat-log" id="chat-log"></ol>
       <form class="composer" id="composer" onsubmit="return false">
-        <textarea id="chat-input" rows="1" placeholder="Tell Ada what you need" enterkeyhint="send"></textarea>
-        <button id="chat-send" type="submit" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M4 12 20 4l-6 16-3-7z"/></svg></button>
+        <div class="cmp-box">
+          <textarea id="chat-input" rows="1" placeholder="Message Ada" enterkeyhint="send"></textarea>
+          <div class="cmp-row">
+            <button type="button" id="brain-btn" class="brain-chip" aria-label="Choose brain"></button>
+            <span class="cmp-hint" id="chat-hint"></span>
+            <button id="chat-send" type="submit" aria-label="Send">
+              <svg class="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+              <svg class="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+            </button>
+          </div>
+        </div>
       </form>
-      <p class="chat-hint" id="chat-hint"></p>
+      <div class="sheet" id="brain-sheet" hidden>
+        <div class="sheet-card">
+          <div class="sheet-grab"></div>
+          <h4>Ada thinks with</h4>
+          <div class="seg" id="brain-seg"><button type="button" data-brain="claude">Claude</button><button type="button" data-brain="codex">Codex</button></div>
+          <p class="sheet-note">Applies from your next message. Switching brains hands over a recap of the recent chat.</p>
+          <div class="model-list" id="brain-models"></div>
+        </div>
+      </div>
+      <div class="sheet" id="chat-sheet" hidden>
+        <div class="sheet-card">
+          <div class="sheet-grab"></div>
+          <h4>Chat</h4>
+          <button type="button" class="sheet-action" id="chat-reset">
+            <b>Fresh context</b>
+            <span>Start Ada on a new session. History stays here and her memory files load again. Use it when the chat gets long or drifts.</span>
+          </button>
+          <p class="sheet-note">Ada reads your Work folder and her ghost (identity, rules, memory, state). She can't change files herself; workers run in safe mode, editing only inside their own project folder.</p>
+          <button type="button" class="sheet-close" data-close>Done</button>
+        </div>
+      </div>
     </section>
 
-    <section class="view" id="view-tasks" data-view="tasks" hidden>
-      <h2 class="sec">Delegated tasks</h2>
-      <div id="tasks"></div>
+    <section class="view" id="view-activity" data-view="activity" hidden>
+      <div id="act-running"></div>
+      <h2 class="sec">Activity</h2>
+      <div class="chips" id="act-filter">
+        <button data-f="all" class="on">All</button>
+        <button data-f="tasks">Tasks</button>
+        <button data-f="agents">Agents</button>
+        <button data-f="you">You</button>
+      </div>
+      <ol class="act-list" id="act-list"></ol>
     </section>
 
     <section class="view" id="view-work" data-view="work" hidden>
@@ -93,20 +129,15 @@
       <div id="work"></div>
     </section>
 
-    <section class="view" id="view-log" data-view="log" hidden>
-      <h2 class="sec">Activity log</h2>
-      <ol class="log" id="log"></ol>
-    </section>
 
     <nav class="tabs" id="tabs">
       <button data-tab="now" class="on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/></svg>Now</button>
       <button data-tab="chat"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>Ada</button>
-      <button data-tab="tasks"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Tasks</button>
+      <button data-tab="activity"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>Activity</button>
       <button data-tab="work"><svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z"/></svg>Work</button>
-      <button data-tab="log"><svg viewBox="0 0 24 24"><path d="M12 7v5l3 2"/><circle cx="12" cy="12" r="9"/></svg>Log</button>
     </nav>
   </div>
 
-  <script src="app.js" type="module"></script>
+  <script src="app.js?v=mvlhtm7p" type="module"></script>
 </body>
 </html>

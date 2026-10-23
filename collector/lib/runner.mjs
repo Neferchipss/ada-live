@@ -9,13 +9,15 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-function claudeArgs({ role, model, resume, system }) {
+function claudeArgs({ role, model, resume, systemFile, addDirs }) {
   const a = ['-p', '--output-format', 'json', '--setting-sources', 'project', '--permission-prompts', 'none'];
   if (role === 'worker') a.push('--permission-mode', 'acceptEdits');
   else a.push('--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell');
   if (model) a.push('--model', model);
   if (resume) a.push('--resume', resume);
-  if (system) a.push('--append-system-prompt', system);
+  // Ada's prompt is far past Windows' 32K command-line limit, so it goes in a file.
+  if (systemFile) a.push('--append-system-prompt-file', systemFile);
+  if (addDirs?.length) a.push('--add-dir', ...addDirs);
   return a;
 }
 
@@ -32,12 +34,14 @@ function codexArgs({ role, model, resume, cwd, lastMsg }) {
  * Starts a run. Returns { child, done } where done resolves to
  * { ok, text, session, code, error }.
  */
-export function runAgent({ agent, role, model, cwd, prompt, resume, system, onSession }) {
+export function runAgent({ agent, role, model, cwd, prompt, resume, system, addDirs, onSession }) {
   const lastMsg = path.join(os.tmpdir(), `ada-run-${crypto.randomBytes(4).toString('hex')}.txt`);
   const isClaude = agent === 'claude';
   // Codex has no system-prompt flag: put the instructions at the top of a fresh conversation.
   const input = !isClaude && system && !resume ? `${system}\n\n---\n\n${prompt}` : prompt;
-  const args = isClaude ? claudeArgs({ role, model, resume, system }) : codexArgs({ role, model, resume, cwd, lastMsg });
+  let systemFile = null;
+  if (isClaude && system) { systemFile = lastMsg.replace(/\.txt$/, '-system.md'); fs.writeFileSync(systemFile, system); }
+  const args = isClaude ? claudeArgs({ role, model, resume, systemFile, addDirs: addDirs?.filter((d) => fs.existsSync(d)) }) : codexArgs({ role, model, resume, cwd, lastMsg });
   const env = { ...process.env };
   delete env.CLAUDECODE; // let a nested Claude start even if the collector was launched from one
 
@@ -63,6 +67,7 @@ export function runAgent({ agent, role, model, cwd, prompt, resume, system, onSe
     let spawnErr = null;
     child.on('error', (e) => { spawnErr = e; });
     child.on('close', (code) => {
+      if (systemFile) try { fs.unlinkSync(systemFile); } catch {}
       if (isClaude) {
         try {
           const o = JSON.parse(out.trim().split('\n').pop());

@@ -203,7 +203,7 @@ function setConn(cls, text) {
   $('#conn-text').textContent = text;
 }
 
-const agentLabel = { claude: 'Claude', codex: 'Codex', chatgpt: 'ChatGPT', task: 'Task' };
+const agentLabel = { claude: 'Claude', codex: 'Codex', chatgpt: 'ChatGPT', task: 'Task', ada: 'Ada' };
 
 /* ---------------- render ---------------- */
 function render() {
@@ -213,9 +213,8 @@ function render() {
   renderPC();
   renderFlow();
   renderChat();
-  renderTasks();
+  renderActivity();
   renderWork();
-  renderLog();
   tickClock();
 }
 
@@ -386,20 +385,6 @@ function renderFlow() {
       </div>`).join('') : '<div class="empty">Nothing has moved in the last 6 hours.</div>'}`;
 }
 
-function renderTasks() {
-  const tasks = data.tasks || [];
-  $('#tasks').innerHTML = tasks.length ? tasks.map((k) => `
-    <div class="task" data-agent="${esc(k.agent || 'task')}">
-      <div class="f-top">
-        <span class="badge">${esc(agentLabel[k.agent] || k.agent || 'task')}</span>
-        <span class="f-title">${esc(k.title)}</span>
-        <span class="st ${esc(k.status)}">${esc(k.status)}</span>
-      </div>
-      ${k.preview ? `<div class="f-step">${esc(k.preview)}</div>` : ''}
-      <div class="f-to"><span data-ago="${k.updatedAt}">${ago(k.updatedAt)}</span>${k.cwd ? ` · ${esc(short(k.cwd))}` : ''}${k.outputs?.length ? ` · ${k.outputs.length} output${k.outputs.length > 1 ? 's' : ''}` : ''}</div>
-    </div>`).join('')
-    : '<div class="empty">No delegated tasks yet.<br>When Ada hands work to Codex or ChatGPT, each job shows up here with its state and output.</div>';
-}
 
 function renderWork() {
   const q = $('#search').value.trim().toLowerCase();
@@ -464,14 +449,6 @@ function projectCard(p) {
     </details>`;
 }
 
-function renderLog() {
-  const items = data.timeline || [];
-  $('#log').innerHTML = items.length ? items.map((i) => `
-    <li data-agent="${esc(i.agent)}" data-kind="${esc(i.kind)}" class="${i.error ? 'err' : ''}">
-      <div class="lg-meta"><b>${esc(agentLabel[i.agent] || i.agent)}</b><span data-ago="${i.t}">${ago(i.t)}</span><span>${esc(short(i.cwd).split(' / ').pop())}</span></div>
-      <div class="lg-text">${i.kind === 'prompt' ? 'You: ' : ''}${esc(i.text)}</div>
-    </li>`).join('') : '<div class="empty">No activity yet.</div>';
-}
 
 // Refresh relative times and the connection badge every few seconds.
 function tickClock() {
@@ -488,17 +465,54 @@ function tickClock() {
 }
 
 /* ---------------- ada chat ---------------- */
-const NEW = '__new__';
-let chatThread = null;          // selected thread id, or NEW
 let chatKey = '';               // skip re-rendering when nothing changed
-const outbox = new Map();       // cid -> { thread, text, t, failed }
+const outbox = new Map();       // cid -> { text, t, failed, why }
 const openJobs = new Set();
 let brainPref = { agent: 'claude', model: '' };
 try { brainPref = { ...brainPref, ...JSON.parse(localStorage.getItem('ada-brain') || '{}') }; } catch {}
 const rid = () => [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
+const ICON = {
+  spin: '<svg class="spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>',
+  ok: '<svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
+  bad: '<svg viewBox="0 0 24 24"><path d="M12 7v6M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>',
+  wait: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  chev: '<svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>',
+};
+const ADA_MARK = '<svg viewBox="0 0 64 64"><path d="M32 6 58 56H6Z" fill="none" stroke="currentColor" stroke-width="5"/><circle cx="32" cy="40" r="6" fill="currentColor"/></svg>';
 
-// Small, safe formatting: escape first, then `code`, **bold**, and line breaks via CSS.
-const fmt = (s) => esc(s).replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+// Minimal Markdown: fences, headings, lists, paragraphs; inline code/bold/italic/links.
+// Everything is escaped first, so model output can't inject markup.
+function md(src) {
+  const inline = (s) => esc(s)
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?]|$)/g, '$1<i>$2</i>')
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const out = [];
+  const parts = String(src || '').split(/```[^\n]*\n?/);
+  parts.forEach((part, i) => {
+    if (i % 2) { out.push(`<pre><code>${esc(part.replace(/\n$/, ''))}</code></pre>`); return; }
+    let list = null;
+    const close = () => { if (list) { out.push(`</${list}>`); list = null; } };
+    let para = [];
+    const flush = () => { if (para.length) { out.push(`<p>${para.map(inline).join('<br>')}</p>`); para = []; } };
+    for (const line of part.split('\n')) {
+      const h = line.match(/^(#{1,4})\s+(.*)/);
+      const ul = line.match(/^\s*[-*•]\s+(.*)/);
+      const ol = line.match(/^\s*\d+[.)]\s+(.*)/);
+      if (h) { flush(); close(); out.push(`<h4>${inline(h[2])}</h4>`); }
+      else if (ul || ol) {
+        flush();
+        const kind = ul ? 'ul' : 'ol';
+        if (list !== kind) { close(); out.push(`<${kind}>`); list = kind; }
+        out.push(`<li>${inline((ul || ol)[1])}</li>`);
+      } else if (!line.trim()) { flush(); close(); }
+      else { close(); para.push(line); }
+    }
+    flush(); close();
+  });
+  return out.join('');
+}
 
 function dur(ms) {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -506,125 +520,138 @@ function dur(ms) {
 }
 const since = (t) => dur(Date.now() - t);
 
+// A worker job, drawn like an agent tool call: one line, tap to expand.
 function jobCard(j) {
   if (!j) return '';
   const live = j.status === 'running' || j.status === 'queued';
+  const icon = j.status === 'running' ? ICON.spin : j.status === 'queued' ? ICON.wait : j.status === 'done' ? ICON.ok : ICON.bad;
   const time = j.status === 'running' ? `<span data-since="${j.startedAt}">${since(j.startedAt)}</span>`
-    : j.endedAt && j.startedAt ? dur(j.endedAt - j.startedAt) : '';
-  return `<div class="job" data-s="${esc(j.status)}" data-agent="${esc(j.agent)}">
-    <div class="j-top">
-      <span class="j-dot"></span>
-      <span class="j-title">${esc(j.title)}</span>
-      <span class="j-status">${esc(j.status)}${time ? ` · ${time}` : ''}</span>
+    : j.status === 'queued' ? 'queued' : j.endedAt && j.startedAt ? dur(j.endedAt - j.startedAt) : j.status;
+  return `<details class="tool" data-s="${esc(j.status)}" data-agent="${esc(j.agent)}" data-job="${esc(j.id)}" ${openJobs.has(j.id) ? 'open' : ''}>
+    <summary>
+      <span class="tl-ico">${icon}</span>
+      <span class="tl-main">
+        <span class="tl-title">${esc(j.title)}</span>
+        <span class="tl-sub">${esc(agentLabel[j.agent] || j.agent)}${j.model ? ` · ${esc(j.model)}` : ''} · ${esc(short(j.folder).split(' / ').pop())}</span>
+      </span>
+      <span class="tl-time">${time}</span>${ICON.chev}
+    </summary>
+    <div class="tl-body">
+      <div class="tl-row"><b>Folder</b><span>${esc(short(j.folder))}</span></div>
+      ${j.result ? `<div class="tl-sec"><b>${j.status === 'done' ? 'Result' : 'What happened'}</b><div class="md">${md(j.result)}</div></div>` : ''}
+      ${j.denied ? `<div class="tl-warn">Safe mode blocked: ${esc(j.denied.join(', '))}</div>` : ''}
+      <div class="tl-sec dim"><b>Ada's instructions</b><div class="md">${md(j.prompt || '')}</div></div>
+      ${live ? `<button class="tl-cancel" data-cancel="${esc(j.id)}" type="button">Cancel job</button>` : ''}
     </div>
-    <div class="j-meta">
-      <span class="pill">${esc(agentLabel[j.agent] || j.agent)}${j.model ? ` · ${esc(j.model)}` : ''}</span>
-      <span class="pill">${esc(short(j.folder))}</span>
-      ${live ? `<button class="j-cancel" data-cancel="${esc(j.id)}" type="button">Cancel</button>` : ''}
-    </div>
-    ${j.result || j.prompt ? `<details data-job="${esc(j.id)}" ${openJobs.has(j.id) ? 'open' : ''}>
-      <summary>${j.result ? 'Result' : 'Instructions'}</summary>
-      ${j.result ? `<div class="j-text">${fmt(j.result)}</div>` : ''}
-      ${j.denied ? `<div class="j-denied">Safe mode blocked: ${esc(j.denied.join(', '))}</div>` : ''}
-      <div class="j-prompt"><b>Ada's instructions</b>${fmt(j.prompt || '')}</div>
-    </details>` : ''}
-  </div>`;
+  </details>`;
 }
+
+function adaHead(t, b) {
+  return `<div class="ada-head"><span class="ada-av">${ADA_MARK}</span><b>Ada</b>${b?.agent ? `<span class="via" data-agent="${esc(b.agent)}">${esc(brainLabel(b))}</span>` : ''}${t ? `<time data-ago="${t}">${ago(t)}</time>` : ''}</div>`;
+}
+
+function brainLabel(b) { return `${agentLabel[b.agent] || b.agent}${b.model ? ` · ${b.model}` : ''}`; }
 
 function renderChat() {
   const chat = data?.chat;
   const log = $('#chat-log');
-  if (!chat) {
+  if (!chat?.thread) {
     log.innerHTML = '<li class="empty">Chat is off — the laptop collector needs a restart with the new version.</li>';
     return;
   }
-  const threads = chat.threads || [];
-  if (!chatThread || (chatThread !== NEW && !threads.some((t) => t.id === chatThread) && ![...outbox.values()].some((o) => o.thread === chatThread))) {
-    chatThread = threads[0]?.id || NEW;
-  }
-  const t = threads.find((x) => x.id === chatThread);
-  const pending = [...outbox.entries()].filter(([cid, o]) => o.thread === chatThread && !t?.messages.some((m) => m.cid === cid));
+  const t = chat.thread;
+  const pending = [...outbox.entries()].filter(([cid]) => !t.messages.some((m) => m.cid === cid));
   const jobs = new Map((chat.jobs || []).map((j) => [j.id, j]));
+  const busy = !!t.busy;
 
-  const key = JSON.stringify([chatThread, t, pending, chat.jobs?.filter((j) => j.thread === chatThread), brainPref, wsLive, threads.map((x) => x.id + x.title)]);
+  const key = JSON.stringify([t, pending, chat.jobs, brainPref, wsLive]);
   if (key === chatKey) return;
   chatKey = key;
 
-  // Conversation picker.
-  const sel = $('#chat-thread');
-  sel.innerHTML = threads.map((x) => `<option value="${esc(x.id)}">${esc(x.title)}</option>`).join('')
-    + (chatThread !== NEW && !t ? `<option value="${esc(chatThread)}">New chat…</option>` : '')
-    + `<option value="${NEW}">＋ New chat</option>`;
-  sel.value = chatThread;
-  $('#chat-archive').hidden = !t || t.busy;
+  $('#chat-sub').textContent = `${chat.memory ? 'memory loaded' : 'memory offline'} · safe mode`;
+  const chip = $('#brain-btn');
+  chip.innerHTML = `<i data-agent="${esc(brainPref.agent)}"></i>${esc(brainLabel(brainPref))}<svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>`;
+  const models = chat.brains?.[brainPref.agent] || [''];
+  $('#brain-models').innerHTML = models.map((m) => `<button type="button" data-model="${esc(m)}" class="${m === brainPref.model ? 'on' : ''}">${m ? esc(m) : 'Default model'}</button>`).join('');
+  document.querySelectorAll('#brain-seg button').forEach((b) => b.classList.toggle('on', b.dataset.brain === brainPref.agent));
 
-  // Brain: pick for a new chat, fixed once it starts.
-  const brainEl = $('#chat-brain');
-  if (t) {
-    brainEl.innerHTML = `<span class="pill r">${esc(agentLabel[t.brain.agent])}${t.brain.model ? ` · ${esc(t.brain.model)}` : ''}</span><span class="pill">safe mode</span>`;
-  } else {
-    const models = chat.brains?.[brainPref.agent] || [''];
-    brainEl.innerHTML = `
-      <div class="seg" role="group" aria-label="Ada runs on">
-        <button type="button" data-brain="claude" class="${brainPref.agent === 'claude' ? 'on' : ''}">Claude</button>
-        <button type="button" data-brain="codex" class="${brainPref.agent === 'codex' ? 'on' : ''}">Codex</button>
-      </div>
-      <select id="chat-model" aria-label="Model">${models.map((m) => `<option value="${esc(m)}" ${m === brainPref.model ? 'selected' : ''}>${m ? esc(m) : 'default model'}</option>`).join('')}</select>`;
-  }
-
-  const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
+  const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
   const rows = [];
-  if (!t && !pending.length) {
-    rows.push(`<li class="empty">Tell Ada what you need. She reads your Work folder, picks the projects, and hands the jobs to Claude or Codex workers in safe mode — they can edit files in their own folder and nothing else.</li>`);
+  if (!t.messages.length && !pending.length) {
+    rows.push(`<li class="hero">
+      <div class="hero-mark">${ADA_MARK}</div>
+      <h3>Back again, Nefer.</h3>
+      <p>Talk to me about anything. When something needs doing in a project, I'll hand it to a Claude or Codex worker. Workers run in safe mode: they edit files in their own folder and nothing else.</p>
+      <div class="suggest">
+        <button type="button" data-suggest="What's going on across my projects right now?">What's going on across my projects?</button>
+        <button type="button" data-suggest="Which of my projects have uncommitted changes, and what are they?">Which projects have uncommitted work?</button>
+        <button type="button" data-suggest="Where did we leave off? What's the next step?">Where did we leave off?</button>
+      </div>
+    </li>`);
+  } else if (t.total > t.messages.length) {
+    rows.push(`<li class="msg sys">Showing the latest ${t.messages.length} of ${t.total} messages</li>`);
   }
-  for (const m of t?.messages || []) {
-    if (m.role === 'user') rows.push(`<li class="msg me"><div class="bubble">${fmt(m.text)}</div><time data-ago="${m.t}">${ago(m.t)}</time></li>`);
-    else if (m.role === 'ada') rows.push(`<li class="msg ada"><div class="bubble">${fmt(m.text)}</div>${(m.jobs || []).map((id) => jobCard(jobs.get(id))).join('')}<time data-ago="${m.t}">${ago(m.t)}</time></li>`);
-    else if (m.role === 'job') {
-      const j = jobs.get(m.job);
-      rows.push(`<li class="msg note" data-s="${esc(j?.status || '')}">${esc(m.text)}</li>`);
-    } else rows.push(`<li class="msg sys">${fmt(m.text)}</li>`);
+  for (const m of t.messages) {
+    if (m.role === 'user') rows.push(`<li class="msg me"><div class="bubble">${esc(m.text)}</div></li>`);
+    else if (m.role === 'ada') {
+      const cards = (m.jobs || []).map((id) => jobCard(jobs.get(id))).join('');
+      rows.push(`<li class="msg ada">${adaHead(m.t, m)}<div class="md">${md(m.text)}</div>${cards ? `<div class="tools">${cards}</div>` : ''}</li>`);
+    } else if (m.reset) rows.push(`<li class="divider"><span>Fresh context</span></li>`);
+    else if (m.role === 'system') rows.push(`<li class="msg sys">${esc(m.text)}</li>`);
   }
   for (const [cid, o] of pending) {
-    rows.push(`<li class="msg me ${o.failed ? 'failed' : 'sending'}"><div class="bubble">${fmt(o.text)}</div>
-      <time>${o.failed ? `not delivered · <button type="button" class="link" data-retry="${cid}">retry</button>` : 'sending…'}</time></li>`);
+    rows.push(`<li class="msg me ${o.failed ? 'failed' : 'sending'}"><div class="bubble">${esc(o.text)}</div>
+      <span class="m-state">${o.failed ? `Not delivered${o.why ? ` (${esc(o.why)})` : ''} · <button type="button" class="link" data-retry="${cid}">Retry</button>` : 'Sending…'}</span></li>`);
   }
-  if (t?.busy) rows.push(`<li class="msg ada thinking"><div class="bubble"><i></i><i></i><i></i></div><button type="button" class="link" data-stop="${esc(t.id)}">stop</button></li>`);
+  if (busy) rows.push(`<li class="msg ada">${adaHead(null, t.brain)}<div class="thinking">Thinking</div></li>`);
   log.innerHTML = rows.join('');
 
-  const canSend = wsLive;
-  $('#chat-send').disabled = !canSend;
-  $('#chat-hint').textContent = canSend ? '' : 'Not connected to the laptop right now — messages can’t be sent until it’s back.';
-  if (nearBottom) requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight }));
+  // Send turns into stop while Ada is thinking (until you type something to queue).
+  const send = $('#chat-send');
+  const stopMode = busy && !$('#chat-input').value.trim();
+  send.classList.toggle('stop', stopMode);
+  send.setAttribute('aria-label', stopMode ? 'Stop' : 'Send');
+  send.disabled = !wsLive;
+  $('#chat-hint').textContent = wsLive ? '' : 'Laptop not connected';
+  $('#chat-reset').disabled = busy;
+  if (nearBottom || pending.length) requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight }));
 }
 
 async function sendCmd(cmd) {
-  if (!wsLive || !ws) throw new Error('offline');
+  if (!wsLive || !ws || ws.readyState !== 1) throw new Error('not connected');
+  if (!keyCache.key) throw new Error('locked');
   ws.send(JSON.stringify(await seal({ kind: 'cmd', ts: Date.now(), ...cmd })));
 }
 
-async function sendChat(text, cid = rid(), thread = chatThread) {
-  if (thread === NEW || !thread) thread = rid();
-  chatThread = thread;
-  outbox.set(cid, { thread, text, t: Date.now(), failed: false });
+async function sendChat(text, cid = rid()) {
+  const o = { text, t: Date.now(), failed: false, why: '' };
+  outbox.set(cid, o);
   chatKey = '';
   renderChat();
   try {
-    await sendCmd({ type: 'say', id: cid, thread, text, brain: { ...brainPref } });
-  } catch { outbox.get(cid).failed = true; }
+    await sendCmd({ type: 'say', id: cid, text, brain: { ...brainPref } });
+  } catch (e) {
+    console.warn('[ada] send failed', e);
+    o.failed = true; o.why = e.message;
+  }
   // No echo from the laptop within 25s: offer a retry.
   setTimeout(() => {
-    const o = outbox.get(cid);
-    const t = data?.chat?.threads?.find((x) => x.id === thread);
-    if (o && !t?.messages.some((m) => m.cid === cid)) { o.failed = true; chatKey = ''; renderChat(); }
+    if (outbox.get(cid) && !data?.chat?.thread?.messages.some((m) => m.cid === cid)) { o.failed = true; o.why ||= 'laptop didn’t answer'; chatKey = ''; renderChat(); }
   }, 25e3);
   chatKey = '';
   renderChat();
 }
 
+function setSheet(id, open) {
+  $(id).hidden = !open;
+  document.body.classList.toggle('sheet-open', !!document.querySelector('.sheet:not([hidden])'));
+}
+
+function saveBrain() { try { localStorage.setItem('ada-brain', JSON.stringify(brainPref)); } catch {} }
+
 function bindChat() {
   const input = $('#chat-input');
-  const grow = () => { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 160)}px`; };
+  const grow = () => { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 168)}px`; chatKey = ''; if (data) renderChat(); };
   input.addEventListener('input', grow);
   input.addEventListener('keydown', (e) => {
     // Desktop: Enter sends, Shift+Enter is a new line. Phones keep Enter for new lines.
@@ -633,40 +660,123 @@ function bindChat() {
   $('#composer').addEventListener('submit', (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text || !wsLive) return;
+    if (!text) {
+      if (data?.chat?.thread?.busy) sendCmd({ type: 'stop', id: rid() }).catch(() => {});
+      return;
+    }
+    if (!wsLive) return;
     input.value = '';
-    grow();
     sendChat(text);
+    grow();
   });
-  $('#chat-thread').addEventListener('change', (e) => { chatThread = e.target.value; chatKey = ''; renderChat(); });
-  $('#chat-archive').addEventListener('click', () => {
-    if (!chatThread || chatThread === NEW) return;
-    sendCmd({ type: 'archive', id: rid(), thread: chatThread }).catch(() => {});
-    chatThread = NEW; chatKey = ''; renderChat();
+  $('#chat-menu').addEventListener('click', () => setSheet('#chat-sheet', true));
+  $('#brain-btn').addEventListener('click', () => setSheet('#brain-sheet', true));
+  document.querySelectorAll('.sheet').forEach((s) => s.addEventListener('click', (e) => { if (e.target === s || e.target.closest('[data-close]')) setSheet(`#${s.id}`, false); }));
+  $('#chat-reset').addEventListener('click', () => {
+    sendCmd({ type: 'reset', id: rid() }).catch(() => {});
+    setSheet('#chat-sheet', false);
   });
-  $('#chat-brain').addEventListener('click', (e) => {
+  $('#brain-seg').addEventListener('click', (e) => {
     const b = e.target.closest('[data-brain]'); if (!b) return;
     brainPref = { agent: b.dataset.brain, model: '' };
-    try { localStorage.setItem('ada-brain', JSON.stringify(brainPref)); } catch {}
-    chatKey = ''; renderChat();
+    saveBrain(); chatKey = ''; renderChat();
   });
-  $('#chat-brain').addEventListener('change', (e) => {
-    if (e.target.id !== 'chat-model') return;
-    brainPref.model = e.target.value;
-    try { localStorage.setItem('ada-brain', JSON.stringify(brainPref)); } catch {}
+  $('#brain-models').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-model]'); if (!b) return;
+    brainPref.model = b.dataset.model;
+    saveBrain(); chatKey = ''; renderChat(); setSheet('#brain-sheet', false);
   });
   $('#chat-log').addEventListener('click', (e) => {
+    const sg = e.target.closest('[data-suggest]');
+    if (sg) { input.value = sg.dataset.suggest; grow(); input.focus(); return; }
     const c = e.target.closest('[data-cancel]');
     if (c) { c.disabled = true; c.textContent = 'Cancelling…'; sendCmd({ type: 'cancel', id: rid(), job: c.dataset.cancel }).catch(() => {}); return; }
-    const s = e.target.closest('[data-stop]');
-    if (s) { s.textContent = 'stopping…'; sendCmd({ type: 'stop', id: rid(), thread: s.dataset.stop }).catch(() => {}); return; }
     const r = e.target.closest('[data-retry]');
-    if (r) { const o = outbox.get(r.dataset.retry); if (o) { outbox.delete(r.dataset.retry); sendChat(o.text, rid(), o.thread); } }
+    if (r) { const o = outbox.get(r.dataset.retry); if (o) { outbox.delete(r.dataset.retry); sendChat(o.text); } }
   });
-  // Remember which job details are expanded across re-renders.
+  // Remember which job cards are expanded across re-renders.
   $('#chat-log').addEventListener('toggle', (e) => {
     const d = e.target; if (!d.dataset?.job) return;
     if (d.open) openJobs.add(d.dataset.job); else openJobs.delete(d.dataset.job);
+  }, true);
+}
+
+/* ---------------- activity (tasks + log) ---------------- */
+let actFilter = 'all';
+const openTasks = new Set();
+
+function dayLabel(t) {
+  const d = new Date(t), now = new Date();
+  const days = Math.round((new Date(now.toDateString()) - new Date(d.toDateString())) / 86400e3);
+  return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+function taskCard(k) {
+  const live = k.status === 'running' || k.status === 'queued';
+  const icon = k.status === 'running' ? ICON.spin : k.status === 'queued' ? ICON.wait : k.status === 'done' ? ICON.ok : ICON.bad;
+  return `<details class="tool act-task" data-s="${esc(k.status)}" data-agent="${esc(k.agent || 'task')}" data-task="${esc(k.id)}" ${openTasks.has(k.id) || live ? 'open' : ''}>
+    <summary>
+      <span class="tl-ico">${icon}</span>
+      <span class="tl-main">
+        <span class="tl-title">${esc(k.title)}</span>
+        <span class="tl-sub">${esc(agentLabel[k.agent] || k.agent || 'Task')}${k.by === 'ada-chat' ? ' · from Ada chat' : ''}${k.cwd ? ` · ${esc(short(k.cwd).split(' / ').pop())}` : ''}</span>
+      </span>
+      <span class="tl-time">${live && k.startedAt ? `<span data-since="${k.startedAt}">${since(k.startedAt)}</span>` : `<span data-ago="${k.updatedAt}">${ago(k.updatedAt)}</span>`}</span>${ICON.chev}
+    </summary>
+    <div class="tl-body">
+      ${k.cwd ? `<div class="tl-row"><b>Folder</b><span>${esc(short(k.cwd))}</span></div>` : ''}
+      ${k.preview ? `<div class="tl-sec"><div class="md">${md(k.preview)}</div></div>` : ''}
+      ${k.outputs?.length ? `<div class="tl-row"><b>Outputs</b><span>${k.outputs.map((o) => esc(o.path.split(/[\\/]/).pop())).join(', ')}</span></div>` : ''}
+    </div>
+  </details>`;
+}
+
+function renderActivity() {
+  const tasks = data.tasks || [];
+  const running = tasks.filter((k) => k.status === 'running' || k.status === 'queued');
+  $('#act-running').innerHTML = running.length
+    ? `<h2 class="sec">In progress <small>${running.length}</small></h2>${running.map(taskCard).join('')}` : '';
+
+  const items = [];
+  if (actFilter !== 'agents' && actFilter !== 'you') {
+    for (const k of tasks) if (!running.includes(k)) items.push({ t: k.updatedAt, task: k });
+  }
+  if (actFilter !== 'tasks') {
+    for (const i of data.timeline || []) {
+      if (i.kind === 'task') continue; // drawn as task cards
+      if (actFilter === 'you' && i.kind !== 'prompt') continue;
+      items.push({ t: i.t, item: i });
+    }
+  }
+  items.sort((a, b) => b.t - a.t);
+  let day = '';
+  const rows = [];
+  for (const x of items.slice(0, 120)) {
+    const d = dayLabel(x.t);
+    if (d !== day) { day = d; rows.push(`<li class="act-day">${d}</li>`); }
+    if (x.task) { rows.push(`<li class="act-card">${taskCard(x.task)}</li>`); continue; }
+    const i = x.item;
+    rows.push(`<li class="act-row ${i.error ? 'err' : ''}" data-agent="${esc(i.agent)}" data-kind="${esc(i.kind)}">
+      <span class="ar-dot"></span>
+      <div class="ar-body">
+        <div class="ar-meta"><b>${i.kind === 'prompt' ? 'You' : esc(agentLabel[i.agent] || i.agent)}</b>${i.cwd ? `<span>${esc(short(i.cwd).split(' / ').pop())}</span>` : ''}<time data-ago="${i.t}">${ago(i.t)}</time></div>
+        <div class="ar-text">${esc(i.text)}</div>
+      </div>
+    </li>`);
+  }
+  $('#act-list').innerHTML = rows.length ? rows.join('') : '<li class="empty">Nothing here yet.</li>';
+}
+
+function bindActivity() {
+  $('#act-filter').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    actFilter = b.dataset.f;
+    document.querySelectorAll('#act-filter button').forEach((x) => x.classList.toggle('on', x === b));
+    renderActivity();
+  });
+  $('#view-activity').addEventListener('toggle', (e) => {
+    const d = e.target; if (!d.dataset?.task) return;
+    if (d.open) openTasks.add(d.dataset.task); else openTasks.delete(d.dataset.task);
   }, true);
 }
 
@@ -674,6 +784,7 @@ function bindChat() {
 function show(view) {
   document.querySelectorAll('.view').forEach((v) => { v.hidden = v.dataset.view !== view; });
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === view));
+  document.body.classList.toggle('in-chat', view === 'chat');
   window.scrollTo({ top: view === 'chat' ? document.body.scrollHeight : 0 });
   try { sessionStorage.setItem('ada-tab', view); } catch {}
 }
@@ -722,6 +833,7 @@ function enterApp() {
   $('#app').hidden = false;
   let tab = 'now';
   try { tab = sessionStorage.getItem('ada-tab') || 'now'; } catch {}
+  if (!document.querySelector(`.view[data-view="${tab}"]`)) tab = 'now';
   show(tab);
   render();
   timer = setTimeout(poll, (config.pollSec || 10) * 1000);
@@ -748,6 +860,7 @@ async function boot() {
   });
   $('#search').addEventListener('input', () => renderWork());
   bindChat();
+  bindActivity();
   $('#kind-filter').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
     kindFilter = b.dataset.k;
