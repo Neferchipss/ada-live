@@ -231,7 +231,7 @@ a.kind:active { opacity: 0.7; }
 .acct[data-svc='chatgpt'] { --k: var(--codex); }
 .a-head { display: flex; align-items: center; gap: 8px; }
 .a-name { font-weight: 700; font-size: 16px; }
-.a-head .pill.r { text-transform: uppercase; letter-spacing: 0.08em; font-size: 10px; }
+.a-head .pill.r { text-transform: uppercase; letter-spacing: 0.08em; font-size: 10px; color: var(--k); border-color: color-mix(in srgb, var(--k) 45%, transparent); }
 .a-fresh { margin-left: auto; font: 11px var(--mono); color: var(--dim); }
 .a-email { font: 12px var(--mono); color: var(--muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; }
 .a-surf { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
