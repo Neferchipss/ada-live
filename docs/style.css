@@ -64,7 +64,7 @@ code, .mono { font-family: var(--mono); }
 .sec { font-size: 13px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); margin: 26px 0 12px; font-weight: 500; }
 .sec small { font-family: var(--mono); color: var(--dim); letter-spacing: 0; text-transform: none; margin-left: 6px; }
 
-.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-template-columns: repeat(4, 1fr);
+.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-template-columns: repeat(5, 1fr);
   padding: 8px 8px calc(8px + var(--safe-b)); background: rgba(11, 10, 12, 0.92); backdrop-filter: blur(12px);
   border-top: 1px solid var(--line); max-width: 720px; margin: 0 auto; }
 .tabs button { background: none; border: 0; display: grid; justify-items: center; gap: 4px; font-size: 11px; color: var(--dim); padding: 6px 0; letter-spacing: 0.04em; }
@@ -245,3 +245,58 @@ a.kind:active { opacity: 0.7; }
 .meter.hot .bar i { background: var(--amber); } .meter.hot .m-pct { color: var(--amber); }
 .meter.crit .bar i { background: var(--red); } .meter.crit .m-pct { color: var(--red); }
 .a-note { font-size: 12px; color: var(--dim); margin: 10px 0 0; line-height: 1.4; }
+
+/* ---------- ada chat ---------- */
+.chat-bar { display: flex; gap: 8px; margin-top: 16px; }
+.chat-bar select, #chat-model { flex: 1; min-width: 0; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; font: 14px var(--sans); }
+.ghost { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 10px; padding: 0 12px; font: 13px var(--sans); }
+.chat-brain { display: flex; gap: 8px; align-items: center; margin: 10px 0 4px; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.seg button { background: none; border: 0; color: var(--muted); padding: 8px 14px; font: 600 13px var(--sans); }
+.seg button.on[data-brain='claude'] { background: var(--red-soft); color: #ff8798; }
+.seg button.on[data-brain='codex'] { background: rgba(63, 182, 168, 0.16); color: var(--codex); }
+#chat-model { flex: 1; }
+.chat-log { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; min-height: 40vh; }
+.msg { display: flex; flex-direction: column; max-width: 88%; }
+.msg time { font: 10px var(--mono); color: var(--dim); margin-top: 3px; }
+.msg.me { align-self: flex-end; align-items: flex-end; }
+.msg.ada { align-self: flex-start; }
+.bubble { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; font-size: 15px; padding: 10px 13px; border-radius: 16px; }
+.me .bubble { background: #2a1a1f; border: 1px solid rgba(224, 38, 63, 0.35); border-bottom-right-radius: 4px; }
+.ada .bubble { background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.me.sending .bubble { opacity: 0.6; }
+.me.failed .bubble { border-color: var(--amber); }
+.bubble code, .j-text code, .j-prompt code { font: 12.5px var(--mono); background: var(--bg-2); padding: 1px 5px; border-radius: 5px; }
+.msg.sys, .msg.note { align-self: center; max-width: 92%; text-align: center; font: 11.5px var(--mono); color: var(--dim); white-space: pre-wrap; }
+.msg.note[data-s='done'] { color: #4ccf7d; }
+.msg.note[data-s='failed'] { color: var(--amber); }
+.link { background: none; border: 0; padding: 0; color: var(--muted); text-decoration: underline; font: inherit; font-size: 11px; }
+.thinking { flex-direction: row; align-items: center; gap: 10px; }
+.thinking .bubble { display: flex; gap: 4px; padding: 13px 14px; }
+.thinking i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
+.thinking i:nth-child(2) { animation-delay: 0.2s; } .thinking i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+.job { margin-top: 8px; background: var(--bg-2); border: 1px solid var(--line); border-left: 3px solid var(--k); border-radius: 12px; padding: 9px 11px; }
+.job[data-agent='claude'] { --k: var(--claude); } .job[data-agent='codex'] { --k: var(--codex); }
+.j-top { display: flex; align-items: center; gap: 8px; }
+.j-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--idle); flex: none; }
+.job[data-s='running'] .j-dot { background: var(--k); animation: blink 1.2s infinite; }
+.job[data-s='done'] .j-dot { background: #4ccf7d; }
+.job[data-s='failed'] .j-dot, .job[data-s='cancelled'] .j-dot { background: var(--amber); }
+.j-title { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.j-status { font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+.j-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; align-items: center; }
+.j-cancel { margin-left: auto; background: none; border: 1px solid rgba(240, 164, 58, 0.5); color: var(--amber); border-radius: 999px; padding: 3px 10px; font: 11px var(--mono); }
+.job details { margin-top: 8px; }
+.job summary { font: 11px var(--mono); color: var(--muted); cursor: pointer; }
+.j-text, .j-prompt { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.45; margin-top: 6px; }
+.j-prompt { color: var(--muted); font-size: 12.5px; border-top: 1px dashed var(--line); padding-top: 6px; }
+.j-prompt b { display: block; font: 600 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); margin-bottom: 3px; }
+.j-denied { font: 11px var(--mono); color: var(--amber); margin-top: 6px; }
+.composer { position: sticky; bottom: calc(70px + var(--safe-b)); display: flex; gap: 8px; align-items: flex-end; margin-top: 14px; padding: 8px 0; background: var(--bg); }
+#chat-input { flex: 1; resize: none; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 11px 13px; font: 15px/1.4 var(--sans); max-height: 160px; }
+#chat-input:focus { outline: none; border-color: rgba(224, 38, 63, 0.6); }
+#chat-send { width: 44px; height: 44px; flex: none; border-radius: 50%; border: 0; background: var(--red); display: grid; place-items: center; }
+#chat-send svg { width: 20px; height: 20px; fill: #fff; stroke: none; }
+#chat-send:disabled { background: var(--line); }
+.chat-hint { font: 11px var(--mono); color: var(--amber); margin: 0 0 8px; min-height: 1em; }

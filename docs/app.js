@@ -1,5 +1,6 @@
-// Ada Live — read-only viewer. Fetches the encrypted feed, decrypts it in the
-// browser with the password, renders. It has no way to send anything back.
+// Ada Live — fetches the encrypted feed, decrypts it in the browser with the password, renders.
+// The only thing it can send is an Ada chat message, sealed with the same key; the laptop
+// drops anything else, and Ada's workers run in safe mode.
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -27,7 +28,7 @@ async function keyFor(env) {
   const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
   const key = await crypto.subtle.deriveKey(
     { name: 'PBKDF2', hash: 'SHA-256', salt: b64(env.salt), iterations: env.iter },
-    base, { name: 'AES-GCM', length: 256 }, true, ['decrypt']);
+    base, { name: 'AES-GCM', length: 256 }, true, ['decrypt', 'encrypt']);
   keyCache = { salt: env.salt, key };
   return key;
 }
@@ -43,6 +44,13 @@ async function decrypt(env) {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
+// Same envelope the laptop uses, uncompressed. The laptop only acts on what this key opens.
+async function seal(obj) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, keyCache.key, new TextEncoder().encode(JSON.stringify(obj)));
+  return { v: 1, kdf: 'pbkdf2-sha256', iter: 600000, salt: keyCache.salt, iv: toB64(iv), gz: false, ct: toB64(ct) };
+}
+
 function rememberKey() {
   crypto.subtle.exportKey('raw', keyCache.key).then((raw) => {
     try { localStorage.setItem(STORE_KEY, JSON.stringify({ salt: keyCache.salt, k: toB64(raw) })); } catch {}
@@ -53,7 +61,7 @@ async function restoreKey() {
   try {
     const s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
     if (!s) return false;
-    const key = await crypto.subtle.importKey('raw', b64(s.k), 'AES-GCM', true, ['decrypt']);
+    const key = await crypto.subtle.importKey('raw', b64(s.k), 'AES-GCM', true, ['decrypt', 'encrypt']);
     keyCache = { salt: s.salt, key };
     return true;
   } catch { return false; }
@@ -105,7 +113,7 @@ function connectRelay() {
   if (!config.relayUrl || ws || paused) return;
   try { ws = new WebSocket(`${config.relayUrl.replace(/^http/, 'ws').replace(/\/$/, '')}/ws?role=viewer`); }
   catch { ws = null; return; }
-  ws.onopen = () => { wsBackoff = 2000; wsLive = true; clearTimeout(timer); };
+  ws.onopen = () => { wsBackoff = 2000; wsLive = true; clearTimeout(timer); if (data) renderChat(); };
   ws.onmessage = async (ev) => {
     try {
       const env = JSON.parse(ev.data);
@@ -121,6 +129,7 @@ function connectRelay() {
     const was = wsLive;
     wsLive = false;
     if (!keyCache.key) return; // locked
+    if (data) renderChat();
     if (was) poll();
     setTimeout(connectRelay, wsBackoff);
     wsBackoff = Math.min(wsBackoff * 2, 60000);
@@ -203,6 +212,7 @@ function render() {
   renderAccounts();
   renderPC();
   renderFlow();
+  renderChat();
   renderTasks();
   renderWork();
   renderLog();
@@ -467,6 +477,7 @@ function renderLog() {
 function tickClock() {
   document.querySelectorAll('[data-ago]').forEach((el) => { el.textContent = ago(Number(el.dataset.ago)); });
   document.querySelectorAll('[data-until]').forEach((el) => { el.textContent = until(Number(el.dataset.until)); });
+  document.querySelectorAll('[data-since]').forEach((el) => { el.textContent = since(Number(el.dataset.since)); });
   if (!data || paused) return;
   const age = Date.now() - (data.generatedAt || 0);
   if (!lastFetchOk) return;
@@ -476,11 +487,194 @@ function tickClock() {
   else setConn('ok', `live · ${ago(data.generatedAt)}`);
 }
 
+/* ---------------- ada chat ---------------- */
+const NEW = '__new__';
+let chatThread = null;          // selected thread id, or NEW
+let chatKey = '';               // skip re-rendering when nothing changed
+const outbox = new Map();       // cid -> { thread, text, t, failed }
+const openJobs = new Set();
+let brainPref = { agent: 'claude', model: '' };
+try { brainPref = { ...brainPref, ...JSON.parse(localStorage.getItem('ada-brain') || '{}') }; } catch {}
+const rid = () => [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+// Small, safe formatting: escape first, then `code`, **bold**, and line breaks via CSS.
+const fmt = (s) => esc(s).replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+
+function dur(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+const since = (t) => dur(Date.now() - t);
+
+function jobCard(j) {
+  if (!j) return '';
+  const live = j.status === 'running' || j.status === 'queued';
+  const time = j.status === 'running' ? `<span data-since="${j.startedAt}">${since(j.startedAt)}</span>`
+    : j.endedAt && j.startedAt ? dur(j.endedAt - j.startedAt) : '';
+  return `<div class="job" data-s="${esc(j.status)}" data-agent="${esc(j.agent)}">
+    <div class="j-top">
+      <span class="j-dot"></span>
+      <span class="j-title">${esc(j.title)}</span>
+      <span class="j-status">${esc(j.status)}${time ? ` · ${time}` : ''}</span>
+    </div>
+    <div class="j-meta">
+      <span class="pill">${esc(agentLabel[j.agent] || j.agent)}${j.model ? ` · ${esc(j.model)}` : ''}</span>
+      <span class="pill">${esc(short(j.folder))}</span>
+      ${live ? `<button class="j-cancel" data-cancel="${esc(j.id)}" type="button">Cancel</button>` : ''}
+    </div>
+    ${j.result || j.prompt ? `<details data-job="${esc(j.id)}" ${openJobs.has(j.id) ? 'open' : ''}>
+      <summary>${j.result ? 'Result' : 'Instructions'}</summary>
+      ${j.result ? `<div class="j-text">${fmt(j.result)}</div>` : ''}
+      ${j.denied ? `<div class="j-denied">Safe mode blocked: ${esc(j.denied.join(', '))}</div>` : ''}
+      <div class="j-prompt"><b>Ada's instructions</b>${fmt(j.prompt || '')}</div>
+    </details>` : ''}
+  </div>`;
+}
+
+function renderChat() {
+  const chat = data?.chat;
+  const log = $('#chat-log');
+  if (!chat) {
+    log.innerHTML = '<li class="empty">Chat is off — the laptop collector needs a restart with the new version.</li>';
+    return;
+  }
+  const threads = chat.threads || [];
+  if (!chatThread || (chatThread !== NEW && !threads.some((t) => t.id === chatThread) && ![...outbox.values()].some((o) => o.thread === chatThread))) {
+    chatThread = threads[0]?.id || NEW;
+  }
+  const t = threads.find((x) => x.id === chatThread);
+  const pending = [...outbox.entries()].filter(([cid, o]) => o.thread === chatThread && !t?.messages.some((m) => m.cid === cid));
+  const jobs = new Map((chat.jobs || []).map((j) => [j.id, j]));
+
+  const key = JSON.stringify([chatThread, t, pending, chat.jobs?.filter((j) => j.thread === chatThread), brainPref, wsLive, threads.map((x) => x.id + x.title)]);
+  if (key === chatKey) return;
+  chatKey = key;
+
+  // Conversation picker.
+  const sel = $('#chat-thread');
+  sel.innerHTML = threads.map((x) => `<option value="${esc(x.id)}">${esc(x.title)}</option>`).join('')
+    + (chatThread !== NEW && !t ? `<option value="${esc(chatThread)}">New chat…</option>` : '')
+    + `<option value="${NEW}">＋ New chat</option>`;
+  sel.value = chatThread;
+  $('#chat-archive').hidden = !t || t.busy;
+
+  // Brain: pick for a new chat, fixed once it starts.
+  const brainEl = $('#chat-brain');
+  if (t) {
+    brainEl.innerHTML = `<span class="pill r">${esc(agentLabel[t.brain.agent])}${t.brain.model ? ` · ${esc(t.brain.model)}` : ''}</span><span class="pill">safe mode</span>`;
+  } else {
+    const models = chat.brains?.[brainPref.agent] || [''];
+    brainEl.innerHTML = `
+      <div class="seg" role="group" aria-label="Ada runs on">
+        <button type="button" data-brain="claude" class="${brainPref.agent === 'claude' ? 'on' : ''}">Claude</button>
+        <button type="button" data-brain="codex" class="${brainPref.agent === 'codex' ? 'on' : ''}">Codex</button>
+      </div>
+      <select id="chat-model" aria-label="Model">${models.map((m) => `<option value="${esc(m)}" ${m === brainPref.model ? 'selected' : ''}>${m ? esc(m) : 'default model'}</option>`).join('')}</select>`;
+  }
+
+  const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
+  const rows = [];
+  if (!t && !pending.length) {
+    rows.push(`<li class="empty">Tell Ada what you need. She reads your Work folder, picks the projects, and hands the jobs to Claude or Codex workers in safe mode — they can edit files in their own folder and nothing else.</li>`);
+  }
+  for (const m of t?.messages || []) {
+    if (m.role === 'user') rows.push(`<li class="msg me"><div class="bubble">${fmt(m.text)}</div><time data-ago="${m.t}">${ago(m.t)}</time></li>`);
+    else if (m.role === 'ada') rows.push(`<li class="msg ada"><div class="bubble">${fmt(m.text)}</div>${(m.jobs || []).map((id) => jobCard(jobs.get(id))).join('')}<time data-ago="${m.t}">${ago(m.t)}</time></li>`);
+    else if (m.role === 'job') {
+      const j = jobs.get(m.job);
+      rows.push(`<li class="msg note" data-s="${esc(j?.status || '')}">${esc(m.text)}</li>`);
+    } else rows.push(`<li class="msg sys">${fmt(m.text)}</li>`);
+  }
+  for (const [cid, o] of pending) {
+    rows.push(`<li class="msg me ${o.failed ? 'failed' : 'sending'}"><div class="bubble">${fmt(o.text)}</div>
+      <time>${o.failed ? `not delivered · <button type="button" class="link" data-retry="${cid}">retry</button>` : 'sending…'}</time></li>`);
+  }
+  if (t?.busy) rows.push(`<li class="msg ada thinking"><div class="bubble"><i></i><i></i><i></i></div><button type="button" class="link" data-stop="${esc(t.id)}">stop</button></li>`);
+  log.innerHTML = rows.join('');
+
+  const canSend = wsLive;
+  $('#chat-send').disabled = !canSend;
+  $('#chat-hint').textContent = canSend ? '' : 'Not connected to the laptop right now — messages can’t be sent until it’s back.';
+  if (nearBottom) requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight }));
+}
+
+async function sendCmd(cmd) {
+  if (!wsLive || !ws) throw new Error('offline');
+  ws.send(JSON.stringify(await seal({ kind: 'cmd', ts: Date.now(), ...cmd })));
+}
+
+async function sendChat(text, cid = rid(), thread = chatThread) {
+  if (thread === NEW || !thread) thread = rid();
+  chatThread = thread;
+  outbox.set(cid, { thread, text, t: Date.now(), failed: false });
+  chatKey = '';
+  renderChat();
+  try {
+    await sendCmd({ type: 'say', id: cid, thread, text, brain: { ...brainPref } });
+  } catch { outbox.get(cid).failed = true; }
+  // No echo from the laptop within 25s: offer a retry.
+  setTimeout(() => {
+    const o = outbox.get(cid);
+    const t = data?.chat?.threads?.find((x) => x.id === thread);
+    if (o && !t?.messages.some((m) => m.cid === cid)) { o.failed = true; chatKey = ''; renderChat(); }
+  }, 25e3);
+  chatKey = '';
+  renderChat();
+}
+
+function bindChat() {
+  const input = $('#chat-input');
+  const grow = () => { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 160)}px`; };
+  input.addEventListener('input', grow);
+  input.addEventListener('keydown', (e) => {
+    // Desktop: Enter sends, Shift+Enter is a new line. Phones keep Enter for new lines.
+    if (e.key === 'Enter' && !e.shiftKey && matchMedia('(pointer: fine)').matches) { e.preventDefault(); $('#composer').requestSubmit(); }
+  });
+  $('#composer').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text || !wsLive) return;
+    input.value = '';
+    grow();
+    sendChat(text);
+  });
+  $('#chat-thread').addEventListener('change', (e) => { chatThread = e.target.value; chatKey = ''; renderChat(); });
+  $('#chat-archive').addEventListener('click', () => {
+    if (!chatThread || chatThread === NEW) return;
+    sendCmd({ type: 'archive', id: rid(), thread: chatThread }).catch(() => {});
+    chatThread = NEW; chatKey = ''; renderChat();
+  });
+  $('#chat-brain').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-brain]'); if (!b) return;
+    brainPref = { agent: b.dataset.brain, model: '' };
+    try { localStorage.setItem('ada-brain', JSON.stringify(brainPref)); } catch {}
+    chatKey = ''; renderChat();
+  });
+  $('#chat-brain').addEventListener('change', (e) => {
+    if (e.target.id !== 'chat-model') return;
+    brainPref.model = e.target.value;
+    try { localStorage.setItem('ada-brain', JSON.stringify(brainPref)); } catch {}
+  });
+  $('#chat-log').addEventListener('click', (e) => {
+    const c = e.target.closest('[data-cancel]');
+    if (c) { c.disabled = true; c.textContent = 'Cancelling…'; sendCmd({ type: 'cancel', id: rid(), job: c.dataset.cancel }).catch(() => {}); return; }
+    const s = e.target.closest('[data-stop]');
+    if (s) { s.textContent = 'stopping…'; sendCmd({ type: 'stop', id: rid(), thread: s.dataset.stop }).catch(() => {}); return; }
+    const r = e.target.closest('[data-retry]');
+    if (r) { const o = outbox.get(r.dataset.retry); if (o) { outbox.delete(r.dataset.retry); sendChat(o.text, rid(), o.thread); } }
+  });
+  // Remember which job details are expanded across re-renders.
+  $('#chat-log').addEventListener('toggle', (e) => {
+    const d = e.target; if (!d.dataset?.job) return;
+    if (d.open) openJobs.add(d.dataset.job); else openJobs.delete(d.dataset.job);
+  }, true);
+}
+
 /* ---------------- ui ---------------- */
 function show(view) {
   document.querySelectorAll('.view').forEach((v) => { v.hidden = v.dataset.view !== view; });
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === view));
-  window.scrollTo({ top: 0 });
+  window.scrollTo({ top: view === 'chat' ? document.body.scrollHeight : 0 });
   try { sessionStorage.setItem('ada-tab', view); } catch {}
 }
 
@@ -553,6 +747,7 @@ async function boot() {
     renderWork();
   });
   $('#search').addEventListener('input', () => renderWork());
+  bindChat();
   $('#kind-filter').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
     kindFilter = b.dataset.k;

@@ -14,7 +14,8 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, STATE_DIR } from './lib/config.mjs';
 import { Stats } from './lib/stats.mjs';
 import { RelayClient } from './lib/relay.mjs';
-import { deriveKey, seal } from './lib/crypto.mjs';
+import { deriveKey, seal, open } from './lib/crypto.mjs';
+import { ChatHub } from './lib/chat.mjs';
 import { collectClaude } from './lib/claude.mjs';
 import { collectCodex } from './lib/codex.mjs';
 import { collectTasks } from './lib/tasks.mjs';
@@ -43,6 +44,7 @@ const feed = cfg.feedRemote && !once ? new FeedPublisher(cfg.feedRemote, (cfg.pu
 let stats = null;
 let relay = null;
 let accounts = [];
+let hub = null;
 const refreshAccounts = () => collectAccounts().then((a) => { accounts = a; }).catch((e) => console.error('[accounts]', e));
 
 function presence(claude) {
@@ -100,6 +102,7 @@ function snapshot() {
     timeline: timeline(sessions, tasks),
     projects,
     accounts,
+    chat: hub?.view() || null,
   };
 }
 
@@ -146,6 +149,27 @@ function streamLoop() {
   setTimeout(streamLoop, STREAM_MS);
 }
 
+// Chat commands from the page arrive sealed with the page password. Anything else is dropped.
+function onCommand(env) {
+  let cmd;
+  try { cmd = open(env, key); } catch { console.log('[chat] dropped a message that was not sealed with the password'); return; }
+  const why = hub.handle(cmd);
+  console.log(`[chat] ${cmd.type || '?'}${why ? ` rejected: ${why}` : ''}`);
+}
+
+// Push chat changes right away instead of waiting for the next tick.
+let pushTimer = null;
+function pushSoon() {
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    try {
+      const snap = snapshot();
+      write(snap);
+      if (relay?.watching) relay.send(seal_(snap));
+    } catch (e) { console.error('[push]', e); }
+  }, 250);
+}
+
 console.log(`[collector] scanning ${cfg.workRoot} …`);
 const t0 = Date.now();
 work.scanAll();
@@ -160,8 +184,9 @@ if (once) {
   process.exit(0);
 } else {
   stats = new Stats();
+  hub = new ChatHub({ workRoot: cfg.workRoot, projects: () => work.list(), onChange: pushSoon });
   if (cfg.relayUrl && cfg.relayKey) {
-    relay = new RelayClient(cfg.relayUrl, cfg.relayKey, (n) => { if (n > 0 && !streaming) streamLoop(); });
+    relay = new RelayClient(cfg.relayUrl, cfg.relayKey, (n) => { if (n > 0 && !streaming) streamLoop(); }, onCommand);
   }
   work.watch();
   await work.refreshGit(500);

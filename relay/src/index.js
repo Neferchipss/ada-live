@@ -1,12 +1,15 @@
 // Ada Live relay. Passes the laptop's encrypted snapshots to open viewers in real time.
 // It only ever handles ciphertext: the password never leaves Nefer's devices.
 //
-//   wss://<worker>/ws?role=viewer              phone/browser: receives snapshots, cannot send anything
+//   wss://<worker>/ws?role=viewer              phone/browser: receives snapshots; may send encrypted chat
+//                                              commands, passed to the laptop unread (it checks them)
 //   wss://<worker>/ws?role=pub&key=<PUB_KEY>   the laptop collector: sends snapshots, hears viewer count
 import { DurableObject } from 'cloudflare:workers';
 
 const PERSIST_EVERY_MS = 20_000;
 const MAX_MESSAGE = 512 * 1024;
+const MAX_COMMAND = 32 * 1024;
+const COMMANDS_PER_MIN = 30;
 
 export class Relay extends DurableObject {
   constructor(ctx, env) {
@@ -38,7 +41,7 @@ export class Relay extends DurableObject {
 
   async webSocketMessage(ws, message) {
     const [role] = this.ctx.getTags(ws);
-    if (role !== 'pub') return; // viewers are read-only
+    if (role === 'viewer') return this.#forward(ws, message);
     if (typeof message !== 'string' || message.length > MAX_MESSAGE) return;
     this.last = message;
     for (const v of this.ctx.getWebSockets('viewer')) {
@@ -59,6 +62,19 @@ export class Relay extends DurableObject {
   async webSocketError(ws) {
     const [role] = this.ctx.getTags(ws);
     if (role === 'viewer') this.#announce(ws);
+  }
+
+  // Viewer -> laptop. The relay can't read these; the laptop drops anything not sealed with the password.
+  #forward(ws, message) {
+    if (typeof message !== 'string' || message.length > MAX_COMMAND) return;
+    const now = Date.now();
+    const a = ws.deserializeAttachment() || { start: now, n: 0 };
+    if (now - a.start > 60_000) { a.start = now; a.n = 0; }
+    if (++a.n > COMMANDS_PER_MIN) return;
+    ws.serializeAttachment(a);
+    for (const p of this.ctx.getWebSockets('pub')) {
+      try { p.send(message); } catch {}
+    }
   }
 
   #viewers(except) {

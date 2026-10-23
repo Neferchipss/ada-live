@@ -1,7 +1,8 @@
 // Laptop side of the realtime relay. Holds one WebSocket to the Cloudflare relay,
 // learns how many viewers are watching, and streams snapshots only while someone is.
 export class RelayClient {
-  constructor(url, key, onViewers = () => {}) {
+  constructor(url, key, onViewers = () => {}, onCommand = () => {}) {
+    this.onCommand = onCommand;
     this.url = `${url.replace(/\/$/, '')}/ws?role=pub&key=${encodeURIComponent(key)}`;
     this.onViewers = onViewers;
     this.viewers = 0;
@@ -23,6 +24,8 @@ export class RelayClient {
           this.viewers = m.n;
           if (m.n !== was) console.log(`[relay] viewers: ${m.n}`);
           this.onViewers(m.n, was);
+        } else if (m.ct && m.iv) {
+          this.onCommand(m); // sealed envelope from a viewer
         }
       } catch {}
     });
