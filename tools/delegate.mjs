@@ -32,12 +32,18 @@ const args = ['exec', '--skip-git-repo-check', '-C', cwd, '-o', lastMsg, '-s', o
 for (const im of opt.images) args.push('-i', im);
 args.push('-');
 
+let tail = '';
+let session = null;
 // codex is a real .exe, so no shell: paths with spaces stay intact.
 const child = spawn('codex', args, { cwd, windowsHide: true });
 child.on('error', (err) => { tail += `\nERROR: ${err.message}`; });
 child.stdin.end(prompt);
-let tail = '';
-const keep = (d) => { tail = (tail + d.toString()).slice(-4000); };
+// Grab Codex's session id from its banner before the rolling tail drops it.
+const keep = (d) => {
+  const text = d.toString();
+  session ||= text.match(/session id:\s*([0-9a-f-]{36})/i)?.[1] || null;
+  tail = (tail + text).slice(-4000);
+};
 child.stdout.on('data', keep);
 child.stderr.on('data', keep);
 
@@ -59,7 +65,6 @@ child.on('close', (code) => {
   let msg = '';
   try { msg = fs.readFileSync(lastMsg, 'utf8').trim(); fs.unlinkSync(lastMsg); } catch {}
   const outputs = newImages();
-  const session = tail.match(/session id:\s*([0-9a-f-]{36})/i)?.[1];
   // On failure, surface the API's error message rather than the banner.
   const apiErr = [...tail.matchAll(/"message":"([^"]+)"/g)].pop()?.[1];
   const errLine = tail.split('\n').reverse().find((l) => /^ERROR/.test(l));
