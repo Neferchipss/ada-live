@@ -4,5 +4,6 @@
   "repo": "ada-live",
   "branch": "feed",
   "file": "live.enc.json",
-  "pollSec": 30
+  "pollSec": 60,
+  "relayUrl": "https://ada-live-relay.tahaadil89.workers.dev"
 }

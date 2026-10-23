@@ -46,6 +46,8 @@
 
     <section class="view" id="view-now" data-view="now">
       <article class="presence" id="presence"></article>
+      <h2 class="sec">Laptop <small id="pc-name"></small></h2>
+      <div class="pc" id="pc"></div>
       <h2 class="sec">Flow <small id="flow-count"></small></h2>
       <div class="flow" id="flow"></div>
     </section>
@@ -63,6 +65,13 @@
           <button data-f="active" class="on">Active</button>
           <button data-f="week">This week</button>
           <button data-f="all">All</button>
+        </div>
+        <div class="chips kinds" id="kind-filter">
+          <button data-k="" class="on">Any type</button>
+          <button data-k="pages"><i class="k-dot" data-kind="pages"></i>Live site</button>
+          <button data-k="github"><i class="k-dot" data-kind="github"></i>GitHub</button>
+          <button data-k="git"><i class="k-dot" data-kind="git"></i>Local git</button>
+          <button data-k="local"><i class="k-dot" data-kind="local"></i>Local</button>
         </div>
       </div>
       <div id="work"></div>

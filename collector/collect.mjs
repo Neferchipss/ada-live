@@ -11,7 +11,9 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from './lib/config.mjs';
+import { loadConfig, STATE_DIR } from './lib/config.mjs';
+import { Stats } from './lib/stats.mjs';
+import { RelayClient } from './lib/relay.mjs';
 import { deriveKey, seal } from './lib/crypto.mjs';
 import { collectClaude } from './lib/claude.mjs';
 import { collectCodex } from './lib/codex.mjs';
@@ -24,6 +26,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(HERE, '..', 'docs', 'data', 'live.enc.json');
 const HEARTBEAT_MS = 60e3;
 const RESCAN_MS = 15 * 60e3;
+const STREAM_MS = 3000;
+const GH_CACHE = path.join(STATE_DIR, 'github-cache.json');
 
 const args = process.argv.slice(2);
 const once = args.includes('--once');
@@ -34,7 +38,9 @@ const cfg = loadConfig();
 const key = deriveKey(cfg.password, cfg.salt);
 const work = new WorkMap(cfg.workRoot);
 // feedRemote in config (e.g. https://github.com/<you>/ada-live.git) turns on publishing.
-const feed = cfg.feedRemote && !once ? new FeedPublisher(cfg.feedRemote, (cfg.pushSec || 30) * 1000) : null;
+const feed = cfg.feedRemote && !once ? new FeedPublisher(cfg.feedRemote, (cfg.pushSec || 60) * 1000) : null;
+let stats = null;
+let relay = null;
 
 function presence(claude) {
   const live = claude.filter((s) => s.status !== 'idle');
@@ -96,15 +102,20 @@ function snapshot() {
 let lastDigest = '';
 let lastWrite = 0;
 
+function seal_(snap) {
+  snap.generatedAt = Date.now();
+  snap.stats = stats?.snapshot() || null;
+  return JSON.stringify(seal(snap, key, cfg.salt));
+}
+
+// Slow path: local file + GitHub feed. Writes on real change (stats ignored) or every heartbeat.
 function write(snap) {
   const digest = crypto.createHash('sha1').update(JSON.stringify(snap)).digest('hex');
   const now = Date.now();
   if (digest === lastDigest && now - lastWrite < HEARTBEAT_MS) return false;
-  snap.generatedAt = now;
-  const env = seal(snap, key, cfg.salt);
+  const body = seal_(snap);
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   const tmp = OUT + '.tmp';
-  const body = JSON.stringify(env);
   fs.writeFileSync(tmp, body);
   fs.renameSync(tmp, OUT);
   feed?.offer(body);
@@ -119,7 +130,16 @@ async function tick() {
   const snap = snapshot();
   const wrote = write(snap);
   const a = snap.ada;
-  console.log(`[${new Date().toLocaleTimeString()}] ada=${a.status} sessions=${snap.sessions.length} projects=${snap.projects.length}${wrote ? ' (written)' : ''}`);
+  console.log(`[${new Date().toLocaleTimeString()}] ada=${a.status} sessions=${snap.sessions.length} projects=${snap.projects.length}${wrote ? ' (written)' : ''}${relay?.watching ? ` · streaming to ${relay.viewers}` : ''}`);
+}
+
+// Fast path: while a viewer is connected, stream a fresh snapshot every few seconds.
+let streaming = false;
+function streamLoop() {
+  if (!relay?.watching) { streaming = false; return; }
+  streaming = true;
+  try { relay.send(seal_(snapshot())); } catch (e) { console.error('[stream]', e); }
+  setTimeout(streamLoop, STREAM_MS);
 }
 
 console.log(`[collector] scanning ${cfg.workRoot} …`);
@@ -129,12 +149,20 @@ console.log(`[collector] ${work.projects.size} projects in ${((Date.now() - t0) 
 
 if (once) {
   await work.refreshGit(500);
+  await work.refreshGithub(GH_CACHE);
   write(snapshot());
   console.log(`[collector] wrote ${OUT}`);
+  process.exit(0);
 } else {
+  stats = new Stats();
+  if (cfg.relayUrl && cfg.relayKey) {
+    relay = new RelayClient(cfg.relayUrl, cfg.relayKey, (n) => { if (n > 0 && !streaming) streamLoop(); });
+  }
   work.watch();
   await work.refreshGit(500);
+  await work.refreshGithub(GH_CACHE);
   await tick();
   setInterval(() => tick().catch((e) => console.error('[collector]', e)), cfg.intervalSec * 1000);
   setInterval(() => { try { work.scanAll(); } catch (e) { console.error('[rescan]', e); } }, RESCAN_MS);
+  setInterval(() => work.refreshGithub(GH_CACHE).catch((e) => console.error('[github]', e)), 10 * 60e3);
 }

@@ -19,6 +19,15 @@ const MARKERS = ['.git', 'package.json', 'Cargo.toml', 'CLAUDE.md', 'AGENTS.md',
 const MAX_ENTRIES = 4000;
 const MAX_DEPTH = 5;
 
+// The project folder itself, or a repo one level down (e.g. "client/site-repo").
+function findRepo(dir) {
+  if (fs.existsSync(path.join(dir, '.git'))) return dir;
+  for (const e of safeReaddir(dir)) {
+    if (e.isDirectory() && !SKIP.has(e.name) && fs.existsSync(path.join(dir, e.name, '.git'))) return path.join(dir, e.name);
+  }
+  return null;
+}
+
 function looksLikeProject(dir, entries) {
   const names = new Set(entries.map((e) => e.name));
   if (MARKERS.some((m) => names.has(m))) return true;
@@ -59,13 +68,14 @@ export class WorkMap {
     // keep scan results for projects that still exist
     for (const [k, v] of found) {
       const old = this.projects.get(k);
-      if (old) Object.assign(v, { lastModified: old.lastModified, recent: old.recent, git: old.git });
+      if (old) Object.assign(v, { lastModified: old.lastModified, recent: old.recent, git: old.git, remote: old.remote, github: old.github });
     }
     this.projects = found;
   }
 
   #make(p, name, group, looseOnly = false) {
-    return { name, group, path: p, looseOnly, lastModified: 0, recent: [], git: null, isRepo: fs.existsSync(path.join(p, '.git')) };
+    const gitPath = looseOnly ? null : findRepo(p);
+    return { name, group, path: p, looseOnly, lastModified: 0, recent: [], git: null, isRepo: !!gitPath, gitPath };
   }
 
   // Bounded walk to find the newest files in one project.
@@ -136,11 +146,15 @@ export class WorkMap {
     await Promise.all(batch.map(async (p) => {
       this.dirtyGit.delete(p);
       try {
-        const opts = { cwd: p.path, windowsHide: true, timeout: 8000 };
-        const [{ stdout: st }, { stdout: lg }] = await Promise.all([
+        const opts = { cwd: p.gitPath || p.path, windowsHide: true, timeout: 8000 };
+        const [{ stdout: st }, { stdout: lg }, remote] = await Promise.all([
           run('git', ['status', '--porcelain=v1', '-b'], opts),
-          run('git', ['log', '-1', '--format=%h%x1f%s%x1f%cI'], opts),
+          run('git', ['log', '-1', '--format=%h%x1f%s%x1f%cI'], opts).catch(() => ({ stdout: '' })),
+          run('git', ['remote', 'get-url', 'origin'], opts).then((r) => r.stdout.trim()).catch(() => ''),
         ]);
+        const gh = remote.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+        p.remote = remote ? remote.replace(/\/\/[^@/]+@/, '//') : '';
+        p.github = gh ? `${gh[1]}/${gh[2]}` : null;
         const lines = st.split('\n').filter(Boolean);
         const head = lines.shift() || '';
         const m = head.match(/^## ([^.\s]+)(?:\.\.\.\S+)?(?: \[(.+)\])?/);
@@ -157,10 +171,49 @@ export class WorkMap {
     }));
   }
 
+  // Ask GitHub (via the logged-in gh CLI) whether each repo is public/private and
+  // has a Pages site. Cached on disk; refreshed at most hourly per repo.
+  async refreshGithub(cacheFile) {
+    if (!this.ghCache) {
+      try { this.ghCache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch { this.ghCache = {}; }
+    }
+    const repos = new Set([...this.projects.values()].map((p) => p.github).filter(Boolean));
+    let changed = false;
+    for (const repo of repos) {
+      const hit = this.ghCache[repo];
+      if (hit && Date.now() - hit.checked < 3600e3) continue;
+      const info = { checked: Date.now() };
+      try {
+        const { stdout } = await run('gh', ['api', `repos/${repo}`, '--jq', '{private: .private, pages: .has_pages, url: .html_url}'], { windowsHide: true, timeout: 15000 });
+        Object.assign(info, JSON.parse(stdout));
+        if (info.pages) {
+          const { stdout: pg } = await run('gh', ['api', `repos/${repo}/pages`, '--jq', '.html_url'], { windowsHide: true, timeout: 15000 }).catch(() => ({ stdout: '' }));
+          info.site = pg.trim() || null;
+        }
+      } catch {
+        info.unknown = true; // no access (someone else's private repo) or gh offline
+      }
+      this.ghCache[repo] = info;
+      changed = true;
+    }
+    if (changed) { try { fs.writeFileSync(cacheFile, JSON.stringify(this.ghCache, null, 1)); } catch {} }
+  }
+
+  // local | git (no GitHub remote) | github | pages
+  #kind(p) {
+    if (!p.isRepo) return { kind: 'local' };
+    if (!p.github) return { kind: 'git', remote: p.remote || null };
+    const info = this.ghCache?.[p.github] || {};
+    return {
+      kind: info.site ? 'pages' : 'github',
+      repo: p.github, private: info.private ?? null, site: info.site || null, url: info.url || `https://github.com/${p.github}`,
+    };
+  }
+
   list() {
     return [...this.projects.values()].map((p) => ({
       name: p.name, group: p.group, path: p.path, lastModified: p.lastModified,
-      recent: p.recent, git: p.git, isRepo: p.isRepo, looseOnly: p.looseOnly,
+      recent: p.recent, git: p.git, isRepo: p.isRepo, looseOnly: p.looseOnly, ...this.#kind(p),
     }));
   }
 }

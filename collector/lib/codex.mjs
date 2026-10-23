@@ -9,6 +9,7 @@ import { parseJsonLines, clip, ms, safeReaddir, safeStat } from './util.mjs';
 const HOME = path.join(os.homedir(), '.codex');
 const RECENT_MS = 48 * 3600e3;
 const WORKING_MS = 10 * 60e3;
+const cache = new Map(); // rollout path -> { mtime, s }
 
 function readRollout(file) {
   const buf = fs.readFileSync(file);
@@ -133,7 +134,11 @@ export function collectCodex() {
   }
   const sessions = [];
   for (const f of files) {
-    try { const s = parse(f, names); if (s) sessions.push(s); } catch {}
+    // Rollouts untouched for 15+ minutes won't change state; reuse the parse (zstd is costly).
+    const mtime = safeStat(f)?.mtimeMs || 0;
+    const hit = cache.get(f);
+    if (hit && hit.mtime === mtime && now - mtime > 15 * 60e3) { if (hit.s) sessions.push(hit.s); continue; }
+    try { const s = parse(f, names); cache.set(f, { mtime, s }); if (s) sessions.push(s); } catch {}
   }
   sessions.sort((a, b) => b.lastActivity - a.lastActivity);
   return sessions;

@@ -13,6 +13,8 @@ let lastFetchOk = 0;
 let lastEtag = '';
 let timer = null;
 let workFilter = 'active';
+let kindFilter = '';
+const KIND = { pages: 'Live site', github: 'GitHub', git: 'Local git', local: 'Local' };
 const openProjects = new Set();
 
 /* ---------------- crypto ---------------- */
@@ -92,8 +94,47 @@ async function fetchGithub() {
   return r.json();
 }
 
+/* ---------------- realtime relay ---------------- */
+// While the relay socket is open, snapshots arrive every few seconds and polling pauses.
+// If it drops, polling the GitHub feed takes over until it reconnects.
+let ws = null;
+let wsBackoff = 2000;
+let wsLive = false;
+
+function connectRelay() {
+  if (!config.relayUrl || ws) return;
+  try { ws = new WebSocket(`${config.relayUrl.replace(/^http/, 'ws').replace(/\/$/, '')}/ws?role=viewer`); }
+  catch { ws = null; return; }
+  ws.onopen = () => { wsBackoff = 2000; wsLive = true; clearTimeout(timer); };
+  ws.onmessage = async (ev) => {
+    try {
+      const env = JSON.parse(ev.data);
+      if (!env.ct || env.iv === lastEtag) return;
+      data = await decrypt(env);
+      lastEtag = env.iv;
+      lastFetchOk = Date.now();
+      render();
+    } catch (e) { console.warn('[ada] relay message', e); }
+  };
+  ws.onclose = () => {
+    ws = null;
+    const was = wsLive;
+    wsLive = false;
+    if (!keyCache.key) return; // locked
+    if (was) poll();
+    setTimeout(connectRelay, wsBackoff);
+    wsBackoff = Math.min(wsBackoff * 2, 60000);
+  };
+}
+
+function disconnectRelay() {
+  if (ws) { const w = ws; ws = null; w.onclose = null; w.close(); }
+  wsLive = false;
+}
+
 async function poll() {
   clearTimeout(timer);
+  if (wsLive) return;
   try {
     const env = await fetchEnvelope();
     const tag = env.iv;
@@ -157,6 +198,7 @@ const agentLabel = { claude: 'Claude', codex: 'Codex', chatgpt: 'ChatGPT', task:
 function render() {
   if (!data) return;
   renderPresence();
+  renderPC();
   renderFlow();
   renderTasks();
   renderWork();
@@ -190,6 +232,61 @@ function renderPresence() {
       <span>${a.activeSessions || 0} active session${a.activeSessions === 1 ? '' : 's'}</span>
       <span>${esc(data.host || '')}</span>
     </div>`;
+}
+
+// Sparkline path for a 0-100 series (nulls break the line).
+function spark(values) {
+  const v = values || [];
+  if (v.length < 2) return '<svg class="spark"></svg>';
+  const w = 100, h = 30, n = v.length - 1;
+  let line = '', pen = false;
+  v.forEach((y, i) => {
+    if (y == null) { pen = false; return; }
+    const px = ((i / n) * w).toFixed(2), py = (h - (Math.min(100, Math.max(0, y)) / 100) * (h - 2) - 1).toFixed(2);
+    line += `${pen ? 'L' : 'M'}${px},${py}`;
+    pen = true;
+  });
+  const firstX = (v.findIndex((y) => y != null) / n) * w;
+  const area = line ? `${line}L${w},${h}L${firstX.toFixed(2)},${h}Z` : '';
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><path class="a" d="${area}"/><path class="l" d="${line}"/></svg>`;
+}
+
+function tile(m, label, val, unit, sub, series, level = '') {
+  return `<div class="tile ${level}" data-m="${m}">
+    <div class="t-top"><span class="t-label">${label}</span><span class="t-val">${val ?? '—'}<small>${val != null ? unit : ''}</small></span></div>
+    ${sub ? `<div class="t-sub">${sub}</div>` : ''}
+    ${spark(series)}
+  </div>`;
+}
+
+function renderPC() {
+  const s = data.stats;
+  const el = $('#pc');
+  if (!s?.now) { el.innerHTML = '<div class="empty tile wide">No stats yet — the collector sends them once it restarts.</div>'; $('#pc-name').textContent = ''; return; }
+  const n = s.now, h = s.history || {}, g = n.gpu;
+  const span = h.cpu?.length ? Math.round((h.cpu.length * (h.step || 3000)) / 60000) : 0;
+  $('#pc-name').textContent = `${esc(data.host || '')} · last ${span} min`;
+  const lvl = (v, hot, crit) => (v == null ? '' : v >= crit ? 'crit' : v >= hot ? 'hot' : '');
+  // Memory clock collapse (e.g. 810 MHz) is the throttle signature seen on this laptop.
+  const memThrottled = g?.clkMem != null && g.clkMem < 2000 && g.util > 30;
+  el.innerHTML = [
+    tile('cpu', 'CPU', n.cpu, '%', `${n.cores} threads`, h.cpu, lvl(n.cpu, 85, 97)),
+    tile('ram', 'RAM', n.ramUsedGB, ` / ${n.ramTotalGB} GB`, `${Math.round((n.ramUsedGB / n.ramTotalGB) * 100)}% used`, h.ram, lvl((n.ramUsedGB / n.ramTotalGB) * 100, 85, 95)),
+    g ? tile('gpu', 'GPU', g.util, '%', esc(n.gpuName.replace(/NVIDIA GeForce /, '')), h.gpu, lvl(g.util, 95, 101)) : '',
+    g ? tile('vram', 'VRAM', g.memUsed != null ? +(g.memUsed / 1024).toFixed(1) : null, ` / ${Math.round(g.memTotal / 1024)} GB`, `${Math.round((g.memUsed / g.memTotal) * 100)}% used`, h.vram, lvl((g.memUsed / g.memTotal) * 100, 85, 95)) : '',
+    g ? `<div class="tile wide ${lvl(g.temp, 80, 87)}" data-m="temp">
+        <div class="t-top"><span class="t-label">GPU temp</span><span class="t-val">${g.temp ?? '—'}<small>°C</small></span></div>
+        <div class="gpu-line">
+          ${g.power != null ? `<span class="pill">${g.power.toFixed(0)} W</span>` : ''}
+          ${g.clkGr != null ? `<span class="pill">core ${g.clkGr} MHz</span>` : ''}
+          ${g.clkMem != null ? `<span class="pill ${memThrottled ? 'warn' : ''}">mem ${g.clkMem} MHz</span>` : ''}
+          ${g.fan != null ? `<span class="pill">fan ${g.fan}%</span>` : ''}
+          ${(g.throttle || []).map((r) => `<span class="pill warn">throttling: ${esc(r)}</span>`).join('')}
+          ${memThrottled ? '<span class="pill warn">memory clock collapsed</span>' : ''}
+        </div>
+        ${spark(h.temp?.map((t) => (t == null ? null : t)))}
+      </div>` : '',
+  ].join('');
 }
 
 function flowItems() {
@@ -259,6 +356,7 @@ function renderWork() {
   if (workFilter === 'active') list = list.filter((p) => now - (p.lastActivity || 0) < 24 * 3600e3 || p.agents?.some((a) => a.status !== 'idle'));
   if (workFilter === 'week') list = list.filter((p) => now - (p.lastActivity || 0) < 7 * 24 * 3600e3);
   if (q) list = list.filter((p) => `${p.group || ''} ${p.name}`.toLowerCase().includes(q));
+  if (kindFilter) list = list.filter((p) => p.kind === kindFilter);
   list.sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
   $('#work-count').textContent = `${list.length} of ${(data.projects || []).length}`;
 
@@ -296,6 +394,7 @@ function projectCard(p) {
           <span class="ago" data-ago="${p.lastActivity || 0}">${ago(p.lastActivity)}</span>
         </div>
         <div class="pj-sub">
+          <span class="kind" data-kind="${esc(p.kind || 'local')}">${KIND[p.kind] || 'Local'}${p.private === true ? ' · private' : p.private === false && p.kind !== 'pages' ? ' · public' : ''}</span>
           ${git ? `<span class="pill">⎇ ${esc(git.branch)}</span>${git.changed ? `<span class="pill r">${git.changed} changed</span>` : '<span class="pill">clean</span>'}` : ''}
           ${live ? `<span class="pill r">agent working</span>` : ''}
           ${p.looseOnly ? '<span class="pill">loose files</span>' : ''}
@@ -303,6 +402,10 @@ function projectCard(p) {
       </summary>
       <div class="pj-body">
         <div class="pj-path">${esc(p.path)}</div>
+        ${p.site || p.repo ? `<div class="pj-links">
+          ${p.site ? `<a href="${esc(p.site)}" target="_blank" rel="noopener">${esc(p.site.replace(/^https?:\/\//, '').replace(/\/$/, ''))} ↗</a>` : ''}
+          ${p.repo ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">github.com/${esc(p.repo)} ↗</a>` : ''}
+        </div>` : ''}
         ${git?.last ? `<div class="commit">${esc(git.last.hash)} · ${esc(git.last.subject)} · <span data-ago="${git.last.t}">${ago(git.last.t)}</span></div>` : ''}
         ${p.recent?.length ? `<div>Recently changed</div><ul>${p.recent.map((r) => `<li><span>${esc(r.file)}</span><span data-ago="${r.t}">${ago(r.t)}</span></li>`).join('')}</ul>` : '<div>No files found.</div>'}
       </div>
@@ -324,7 +427,8 @@ function tickClock() {
   if (!data) return;
   const age = Date.now() - (data.generatedAt || 0);
   if (!lastFetchOk) return;
-  if (Date.now() - lastFetchOk > STALE_MS) setConn('err', 'offline');
+  if (wsLive && age < 20e3) setConn('rt', 'realtime');
+  else if (Date.now() - lastFetchOk > STALE_MS) setConn('err', 'offline');
   else if (age > STALE_MS) setConn('stale', `laptop quiet ${ago(data.generatedAt)}`);
   else setConn('ok', `live · ${ago(data.generatedAt)}`);
 }
@@ -339,6 +443,7 @@ function show(view) {
 
 function lock(msg = '') {
   clearTimeout(timer);
+  disconnectRelay();
   password = null;
   keyCache = { salt: null, key: null };
   data = null;
@@ -383,6 +488,7 @@ function enterApp() {
   show(tab);
   render();
   timer = setTimeout(poll, (config.pollSec || 10) * 1000);
+  connectRelay();
 }
 
 async function boot() {
@@ -399,6 +505,12 @@ async function boot() {
     renderWork();
   });
   $('#search').addEventListener('input', () => renderWork());
+  $('#kind-filter').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    kindFilter = b.dataset.k;
+    document.querySelectorAll('#kind-filter button').forEach((x) => x.classList.toggle('on', x === b));
+    renderWork();
+  });
   document.addEventListener('visibilitychange', () => { if (!document.hidden && data) poll(); });
   setInterval(tickClock, 5000);
 
