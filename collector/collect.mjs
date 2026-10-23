@@ -19,6 +19,7 @@ import { collectClaude } from './lib/claude.mjs';
 import { collectCodex } from './lib/codex.mjs';
 import { collectTasks } from './lib/tasks.mjs';
 import { WorkMap } from './lib/work.mjs';
+import { collectAccounts } from './lib/accounts.mjs';
 import { normPath } from './lib/util.mjs';
 import { FeedPublisher } from './lib/feed.mjs';
 
@@ -41,6 +42,8 @@ const work = new WorkMap(cfg.workRoot);
 const feed = cfg.feedRemote && !once ? new FeedPublisher(cfg.feedRemote, (cfg.pushSec || 60) * 1000) : null;
 let stats = null;
 let relay = null;
+let accounts = [];
+const refreshAccounts = () => collectAccounts().then((a) => { accounts = a; }).catch((e) => console.error('[accounts]', e));
 
 function presence(claude) {
   const live = claude.filter((s) => s.status !== 'idle');
@@ -96,6 +99,7 @@ function snapshot() {
     tasks,
     timeline: timeline(sessions, tasks),
     projects,
+    accounts,
   };
 }
 
@@ -126,7 +130,7 @@ function write(snap) {
 }
 
 async function tick() {
-  await work.refreshGit();
+  await Promise.all([work.refreshGit(), refreshAccounts()]);
   const snap = snapshot();
   const wrote = write(snap);
   const a = snap.ada;
@@ -150,6 +154,7 @@ console.log(`[collector] ${work.projects.size} projects in ${((Date.now() - t0) 
 if (once) {
   await work.refreshGit(500);
   await work.refreshGithub(GH_CACHE);
+  await refreshAccounts();
   write(snapshot());
   console.log(`[collector] wrote ${OUT}`);
   process.exit(0);

@@ -200,6 +200,7 @@ const agentLabel = { claude: 'Claude', codex: 'Codex', chatgpt: 'ChatGPT', task:
 function render() {
   if (!data) return;
   renderPresence();
+  renderAccounts();
   renderPC();
   renderFlow();
   renderTasks();
@@ -259,6 +260,45 @@ function tile(m, label, val, unit, sub, series, level = '') {
     ${sub ? `<div class="t-sub">${sub}</div>` : ''}
     ${spark(series)}
   </div>`;
+}
+
+function until(t) {
+  const m = Math.max(0, Math.round((t - Date.now()) / 60000));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+function meter(label, w) {
+  if (!w) return '';
+  const lvl = w.pct >= 90 ? 'crit' : w.pct >= 70 ? 'hot' : '';
+  const when = w.reset ? 'reset' : w.resetsAt ? `resets in <span data-until="${w.resetsAt}">${until(w.resetsAt)}</span>` : '';
+  return `<div class="meter ${lvl}">
+    <div class="m-top"><span class="t-label">${label}</span><span class="m-pct">${w.pct}<small>%</small></span></div>
+    <div class="bar"><i style="width:${Math.min(100, w.pct)}%"></i></div>
+    <div class="t-sub">${when}</div>
+  </div>`;
+}
+
+function renderAccounts() {
+  const el = $('#accts');
+  const list = data.accounts || [];
+  if (!list.length) { el.innerHTML = '<div class="empty tile">No account info yet — the collector adds it once it restarts.</div>'; return; }
+  el.innerHTML = list.map((a) => `
+    <article class="acct" data-svc="${esc(a.service)}">
+      <div class="a-head">
+        <span class="a-name">${esc(a.name)}</span>
+        ${a.plan ? `<span class="pill r">${esc(a.plan)}</span>` : ''}
+        <span class="a-fresh">${a.live ? 'live' : a.asOf ? `as of <span data-ago="${a.asOf}">${ago(a.asOf)}</span>` : ''}</span>
+      </div>
+      <div class="a-email">${esc(a.email || 'not signed in')}</div>
+      <div class="a-surf">${(a.surfaces || []).map((s) => `<span class="pill">${esc(s)}</span>`).join('')}</div>
+      ${a.error ? `<div class="a-err">${esc(a.error)}</div>` : ''}
+      <div class="meters">${meter('Session · 5h', a.session)}${meter('Weekly', a.weekly)}</div>
+      ${a.extra ? `<div class="t-sub">${esc(a.extra)}</div>` : ''}
+      <p class="a-note">${esc(a.shared || '')}</p>
+    </article>`).join('');
 }
 
 function renderPC() {
@@ -426,6 +466,7 @@ function renderLog() {
 // Refresh relative times and the connection badge every few seconds.
 function tickClock() {
   document.querySelectorAll('[data-ago]').forEach((el) => { el.textContent = ago(Number(el.dataset.ago)); });
+  document.querySelectorAll('[data-until]').forEach((el) => { el.textContent = until(Number(el.dataset.until)); });
   if (!data || paused) return;
   const age = Date.now() - (data.generatedAt || 0);
   if (!lastFetchOk) return;
