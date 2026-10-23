@@ -491,11 +491,16 @@ function enterApp() {
   connectRelay();
 }
 
+let configReady;
 async function boot() {
-  try { config = { ...config, ...(await (await fetch('config.json', { cache: 'no-store' })).json()) }; } catch {}
+  // Hook the form first so an early submit never falls through to a page reload.
+  $('#login-form').addEventListener('submit', async (e) => { e.preventDefault(); await configReady; unlock(e); });
+  configReady = (async () => {
+    try { config = { ...config, ...(await (await fetch('config.json', { cache: 'no-store' })).json()) }; } catch {}
+  })();
+  await configReady;
   // Served from the laptop itself: read the local file the collector writes.
   if (['localhost', '127.0.0.1'].includes(location.hostname)) config = { ...config, source: 'local', path: 'data/live.enc.json', pollSec: 10 };
-  $('#login-form').addEventListener('submit', unlock);
   $('#lock').addEventListener('click', () => lock());
   $('#tabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) show(b.dataset.tab); });
   $('#work-filter').addEventListener('click', (e) => {
