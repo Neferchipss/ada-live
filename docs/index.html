@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0a0c">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Ada Live</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Locked: nothing below is readable until the password decrypts the feed. -->
+  <main id="login" class="login">
+    <div class="login-card">
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64"><path d="M32 6 58 56H6Z" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="32" cy="40" r="5" fill="currentColor"/></svg>
+      </div>
+      <h1>ADA<span>live</span></h1>
+      <p class="muted">Nefer's laptop, from anywhere.</p>
+      <form id="login-form" autocomplete="on">
+        <input id="username" name="username" value="nefer" autocomplete="username" hidden>
+        <input id="password" type="password" placeholder="Password" autocomplete="current-password" required>
+        <label class="check"><input id="remember" type="checkbox"> Remember on this device</label>
+        <button id="unlock" type="submit">Unlock</button>
+        <p id="login-error" class="error" role="alert"></p>
+      </form>
+      <p class="fine">Decrypted on this device. Read-only — nothing here can run anything.</p>
+    </div>
+  </main>
+
+  <div id="app" class="app" hidden>
+    <header class="top">
+      <div class="brand">ADA<span>live</span></div>
+      <div class="conn" id="conn"><i></i><span id="conn-text">connecting</span></div>
+      <button class="lock" id="lock" aria-label="Lock">
+        <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+      </button>
+    </header>
+
+    <section class="view" id="view-now" data-view="now">
+      <article class="presence" id="presence"></article>
+      <h2 class="sec">Flow <small id="flow-count"></small></h2>
+      <div class="flow" id="flow"></div>
+    </section>
+
+    <section class="view" id="view-tasks" data-view="tasks" hidden>
+      <h2 class="sec">Delegated tasks</h2>
+      <div id="tasks"></div>
+    </section>
+
+    <section class="view" id="view-work" data-view="work" hidden>
+      <h2 class="sec">Work <small id="work-count"></small></h2>
+      <div class="filters">
+        <input id="search" type="search" placeholder="Search projects">
+        <div class="chips" id="work-filter">
+          <button data-f="active" class="on">Active</button>
+          <button data-f="week">This week</button>
+          <button data-f="all">All</button>
+        </div>
+      </div>
+      <div id="work"></div>
+    </section>
+
+    <section class="view" id="view-log" data-view="log" hidden>
+      <h2 class="sec">Activity log</h2>
+      <ol class="log" id="log"></ol>
+    </section>
+
+    <nav class="tabs" id="tabs">
+      <button data-tab="now" class="on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/></svg>Now</button>
+      <button data-tab="tasks"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Tasks</button>
+      <button data-tab="work"><svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z"/></svg>Work</button>
+      <button data-tab="log"><svg viewBox="0 0 24 24"><path d="M12 7v5l3 2"/><circle cx="12" cy="12" r="9"/></svg>Log</button>
+    </nav>
+  </div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

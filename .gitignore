@@ -1,0 +1,3 @@
+docs/data/
+*.tmp
+node_modules/

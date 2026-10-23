@@ -1,0 +1,8 @@
+{
+  "source": "github",
+  "owner": "Neferchipss",
+  "repo": "ada-live",
+  "branch": "feed",
+  "file": "live.enc.json",
+  "pollSec": 30
+}
