@@ -6,7 +6,11 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { STATE_DIR } from './config.mjs';
 
-export const APPROVAL_MS = 5 * 60e3;
+export const APPROVAL_MS_OPS = 30 * 60e3; // fixed allowlisted commands run by the collector, no model
+export const APPROVAL_MS_FULL = 5 * 60e3;
+export const PIN_LOCK_MS = 5 * 60e3; // wrong-PIN lockout window, separate from the approval lifetime
+export const approvalMs = (mode) => mode === 'ops' ? APPROVAL_MS_OPS : APPROVAL_MS_FULL;
+export const approvalWindowText = (mode) => `${approvalMs(mode) / 60e3} minutes`;
 export const MAX_PIN_TRIES = 5;
 const PIN_MESSAGE = 'Approval PIN not set. Run node tools/set-fullmode-pin.mjs on the laptop.';
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -134,7 +138,7 @@ export class FullModePolicy {
       if (job.mode === 'ops') job.operation = this.resolveOperation(job.op, job.folder);
       job.approvedByPin = false;
       job.approvalId = crypto.randomBytes(24).toString('hex');
-      job.approvalExpiresAt = this.now() + APPROVAL_MS;
+      job.approvalExpiresAt = this.now() + approvalMs(job.mode);
       job.approvalDigest = binding(job);
       return null;
     } catch (e) { return e.message; }
@@ -144,11 +148,11 @@ export class FullModePolicy {
 
   // Public, PIN-free hint for the page: why the last attempt was refused and how many PIN tries remain.
   #refuse(job, reason, message) {
-    this.pinFailures = this.pinFailures.filter((t) => this.now() - t < APPROVAL_MS);
+    this.pinFailures = this.pinFailures.filter((t) => this.now() - t < PIN_LOCK_MS);
     const used = Math.min(this.pinFailures.length, MAX_PIN_TRIES);
     const locked = used >= MAX_PIN_TRIES;
     job.approvalNote = { reason: locked && reason === 'wrong-pin' ? 'locked' : reason, at: this.now(), attemptsLeft: MAX_PIN_TRIES - used,
-      lockedUntil: locked ? Math.min(...this.pinFailures) + APPROVAL_MS : null };
+      lockedUntil: locked ? Math.min(...this.pinFailures) + PIN_LOCK_MS : null };
     return message;
   }
 
@@ -164,7 +168,7 @@ export class FullModePolicy {
     if (job.approvalDigest !== binding(job)) return this.#refuse(job, 'mismatch', 'Job changed after approval was requested; propose it again.');
     const record = readPin(this.stateDir);
     if (!record) return PIN_MESSAGE;
-    this.pinFailures = this.pinFailures.filter((t) => this.now() - t < APPROVAL_MS);
+    this.pinFailures = this.pinFailures.filter((t) => this.now() - t < PIN_LOCK_MS);
     if (this.pinFailures.length >= MAX_PIN_TRIES) {
       const message = this.#refuse(job, 'locked', 'Too many incorrect PIN attempts; wait five minutes.');
       this.#auditPin(job, 'pin-locked attemptsLeft=0');

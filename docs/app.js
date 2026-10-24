@@ -2,10 +2,10 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=sv-2';
-import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-2';
-import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-2';
-import { buildSessionMap, activeCount, RECENT_ID } from './session-map.mjs?v=sv-2';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=sv-3';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-3';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-3';
+import { buildSessionMap, activeCount, RECENT_ID } from './session-map.mjs?v=sv-3';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';

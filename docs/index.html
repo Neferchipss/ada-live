@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=sv-2">
+  <link rel="stylesheet" href="style.css?v=sv-3">
 </head>
 <body>
   <!-- Locked: nothing below is readable until the password decrypts the feed. -->
@@ -111,7 +111,7 @@
             <b>Fresh context</b>
             <span>Start Ada on a new session. History stays here and her memory files load again. Use it when the chat gets long or drifts.</span>
           </button>
-          <p class="sheet-note">Ada reads your Work folder and her ghost (identity, rules, memory, state). Jobs use safe mode by default. OPS runs a named operation; FULL allows wider access. Each OPS or FULL job needs your approval and PIN within five minutes. There is no always-on full mode.</p>
+          <p class="sheet-note">Ada reads your Work folder and her ghost (identity, rules, memory, state). Jobs use safe mode by default. OPS runs a named operation; FULL allows wider access. Each OPS or FULL job needs your approval and PIN in time (30 minutes for OPS, 5 minutes for FULL). There is no always-on full mode.</p>
           <p class="sheet-note">Set the separate approval PIN on the laptop with <code>node tools/set-fullmode-pin.mjs</code>.</p>
           <button type="button" class="sheet-close" data-close>Done</button>
         </div>
@@ -205,6 +205,6 @@
       setTimeout(function () { if (!window.__adaBooted) say("Page failed to load (the script did not start). Reload, or clear this site's cache."); }, 4000);
     })();
   </script>
-  <script src="app.js?v=sv-2" type="module"></script>
+  <script src="app.js?v=sv-3" type="module"></script>
 </body>
 </html>

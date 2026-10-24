@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ChatHub } from '../collector/lib/chat.mjs';
-import { FullModePolicy, APPROVAL_MS, createPinHash, ensureOps, normalizeMode } from '../collector/lib/fullmode.mjs';
+import { FullModePolicy, APPROVAL_MS_OPS, APPROVAL_MS_FULL, PIN_LOCK_MS, approvalMs, createPinHash, ensureOps, normalizeMode } from '../collector/lib/fullmode.mjs';
 import { LimitTracker } from '../collector/lib/limits.mjs';
 import { claudeArgs, codexArgs, FULL_DISALLOWED, NO_PUSH_RULE, pushWatcher, truncateOutput } from '../collector/lib/runner.mjs';
 
@@ -82,7 +82,8 @@ test('ops and full jobs never auto-start: they wait for approval', async () => {
   const s = setup();
   const jobs = await s.propose([{ mode: 'full', folder: s.proj, agent: 'codex', title: 'Install deps', prompt: 'npm install' }, { mode: 'ops', op: 'echo-ok', title: 'Echo' }]);
   assert.deepEqual(jobs.map((j) => [j.mode, j.status]), [['full', 'awaiting-approval'], ['ops', 'awaiting-approval']]);
-  assert.equal(jobs[0].approvalExpiresAt, s.clock.t + APPROVAL_MS);
+  assert.equal(jobs[0].approvalExpiresAt, s.clock.t + APPROVAL_MS_FULL);
+  assert.equal(jobs[1].approvalExpiresAt, s.clock.t + APPROVAL_MS_OPS);
   assert.equal(s.runs.length, 0);
   assert.equal(s.ops.length, 0);
   const shown = s.hub.view().jobs;
@@ -170,10 +171,10 @@ test('an approved job cannot have its prompt edited afterwards', async () => {
   assert.equal(s.runs.length, 0);
 });
 
-test('approval expires after five minutes, and is reported to chat and the audit log', async () => {
+test('approval expires after five minutes (full), and is reported to chat and the audit log', async () => {
   const s = setup();
   const [job] = await s.propose([{ mode: 'full', folder: s.proj, agent: 'claude', title: 'Late', prompt: 'x' }]);
-  s.clock.t += APPROVAL_MS - 1000;
+  s.clock.t += APPROVAL_MS_FULL - 1000;
   assert.equal(s.policy.expired(job), false);
   s.clock.t += 1001;
   assert.equal(s.policy.expired(job), true);
@@ -181,7 +182,7 @@ test('approval expires after five minutes, and is reported to chat and the audit
   assert.equal(s.hub.handle(s.cmd('approve', { job: job.id, approval: job.approvalId, pin: PIN })), 'Job is not awaiting approval.');
   assert.equal(job.status, 'expired');
   assert.equal(s.runs.length, 0);
-  assert.match(s.system(), /FULL job "Late": Approval expired/);
+  assert.match(s.system(), /FULL job "Late": Approval expired after 5 minutes;/);
   const [line, ...rest] = s.audit();
   assert.equal(rest.length, 0);
   assert.equal(line.outcome, 'expired');
@@ -351,7 +352,7 @@ test('approvalNote counts down 4, 3 ... 0 and locks with lockedUntil after five 
   assert.deepEqual([job.approvalNote.reason, job.approvalNote.attemptsLeft], ['wrong-pin', 3]);
   const first = s.clock.t;
   for (let i = 0; i < 3; i++) approveCmd(s, job, '000000');
-  assert.deepEqual([job.approvalNote.reason, job.approvalNote.attemptsLeft, job.approvalNote.lockedUntil], ['locked', 0, first + APPROVAL_MS]);
+  assert.deepEqual([job.approvalNote.reason, job.approvalNote.attemptsLeft, job.approvalNote.lockedUntil], ['locked', 0, first + PIN_LOCK_MS]);
   assert.equal(job.status, 'awaiting-approval');
   assert.match(approveCmd(s, job, PIN), /Too many/);
   assert.equal(job.approvalNote.reason, 'locked');
@@ -370,7 +371,7 @@ test('approvalNote is cleared on success and not set as a PIN attempt for mismat
   assert.equal(approveCmd(s, job, PIN), null);
   assert.equal(job.approvalNote, undefined, 'success clears the note');
   const j2 = (await s.propose([{ mode: 'full', folder: s.proj, agent: 'claude', prompt: 'y' }])).at(-1);
-  s.clock.t += APPROVAL_MS + 1;
+  s.clock.t += APPROVAL_MS_FULL + 1;
   s.policy.approve(j2, { job: j2.id, approval: j2.approvalId, pin: '000000' }); // policy-level: the hub would already have expired it
   assert.equal(j2.approvalNote.reason, 'expired');
   assert.equal(s.policy.pinFailures.length, 0, 'expiry adds no PIN attempt (the old failure aged out of the window)');
@@ -390,4 +391,49 @@ test('failed attempts are audited without any PIN; view() exposes only the safe 
   const shown = s.hub.view().jobs.find((j) => j.id === job.id);
   assert.deepEqual(Object.keys(shown.approvalNote).sort(), ['at', 'attemptsLeft', 'lockedUntil', 'reason']);
   assert.ok(!JSON.stringify(s.hub.view()).includes('987654'));
+});
+
+test('windows: ops 30 minutes, full 5 minutes, lockout 5 minutes', () => {
+  assert.equal(APPROVAL_MS_OPS, 30 * 60e3);
+  assert.equal(APPROVAL_MS_FULL, 5 * 60e3);
+  assert.equal(PIN_LOCK_MS, 5 * 60e3);
+  assert.equal(approvalMs('ops'), APPROVAL_MS_OPS);
+  assert.equal(approvalMs('full'), APPROVAL_MS_FULL);
+});
+
+test('ops approval expiry boundary at 30 minutes, message names 30 minutes', async () => {
+  const s = setup();
+  const [job] = await s.propose([{ mode: 'ops', op: 'echo-ok', title: 'Echo' }]);
+  const t0 = s.clock.t;
+  assert.equal(job.approvalExpiresAt, t0 + APPROVAL_MS_OPS);
+  s.clock.t = t0 + APPROVAL_MS_FULL + 1000; // past the full window, still open for ops
+  assert.equal(s.policy.expired(job), false);
+  s.clock.t = t0 + APPROVAL_MS_OPS - 1;
+  assert.equal(s.policy.expired(job), false);
+  s.clock.t = t0 + APPROVAL_MS_OPS;
+  assert.equal(s.policy.expired(job), true);
+  s.hub.handle(s.cmd('approve', { job: job.id, approval: job.approvalId, pin: PIN }));
+  assert.equal(job.status, 'expired');
+  assert.match(s.system(), /Approval expired after 30 minutes;/);
+});
+
+test('ops job approved at minute 29 is still checked against approvalExpiresAt at start', async () => {
+  const s = setup();
+  const [job] = await s.propose([{ mode: 'ops', op: 'echo-ok', title: 'Echo' }]);
+  const t0 = s.clock.t;
+  s.clock.t = t0 + 29 * 60e3;
+  assert.equal(s.policy.approve(job, { job: job.id, approval: job.approvalId, pin: PIN }), null);
+  assert.equal(s.policy.authorizeStart(job), null);
+  s.clock.t = t0 + APPROVAL_MS_OPS - 1;
+  assert.equal(s.policy.authorizeStart(job), null);
+  s.clock.t = t0 + APPROVAL_MS_OPS;
+  assert.match(s.policy.authorizeStart(job), /expired before the job could start/);
+});
+
+test('tampering with approvalExpiresAt breaks the binding digest', async () => {
+  const s = setup();
+  const [job] = await s.propose([{ mode: 'ops', op: 'echo-ok', title: 'Echo' }]);
+  job.approvalExpiresAt += 60e3;
+  assert.match(s.policy.approve(job, { job: job.id, approval: job.approvalId, pin: PIN }), /changed after approval/);
+  assert.equal(job.approvedByPin, false);
 });

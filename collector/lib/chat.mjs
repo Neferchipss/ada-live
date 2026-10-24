@@ -9,7 +9,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { STATE_DIR } from './config.mjs';
 import { runAgent, runOperation, killProcessTree } from './runner.mjs';
-import { FullModePolicy, normalizeMode } from './fullmode.mjs';
+import { FullModePolicy, normalizeMode, approvalWindowText } from './fullmode.mjs';
 import { appendTaskEvent } from './tasks.mjs';
 import { limits as sharedLimits } from './limits.mjs';
 import { clip } from './util.mjs';
@@ -239,12 +239,12 @@ export class ChatHub {
     if (!inFlight && !t.busy && t.pending.length) this.#headTurn();
   }
 
-  /** Marks approvals older than five minutes expired and tells chat. Returns true if anything changed. */
+  /** Marks approvals past their own window (30 min ops, 5 min full) expired and tells chat. Returns true if anything changed. */
   #expireApprovals() {
     let changed = false;
     for (const j of this.state.jobs) {
       if (j.status !== 'awaiting-approval' || !this.policy.expired(j)) continue;
-      this.#report(j, 'expired', 'Approval expired after 5 minutes; nothing ran. Ask Ada to propose it again.');
+      this.#report(j, 'expired', `Approval expired after ${approvalWindowText(j.mode)}; nothing ran. Ask Ada to propose it again.`);
       changed = true;
     }
     if (changed) this.#maybeReport();
@@ -344,7 +344,7 @@ To start workers, end your reply with exactly one jobs block:
 - Prefer safe mode. Propose "ops" or "full" only when safe mode genuinely cannot do the job: running or restarting servers, installing dependencies, tests that need the network. Say why in your reply.
 - "ops": no model runs. Give "op" (the name of a pre-approved operation) instead of "prompt"; folder is optional because each operation has its own. Unknown names are rejected. Operations available now: ${this.#opsList()}
 - "full": a Claude or Codex worker with a shell and wide access (any folder inside C:\\Work, installs, network). It can commit but must never git push, deploy or publish; that is blocked, so don't ask for it. Give a complete "prompt" as usual.
-- Approval: ops and full jobs never start on their own. They appear on Nefer's phone with the exact prompt or operation, and he must tap Approve and enter his approval PIN within 5 minutes, separately for each job. If he denies or lets it expire, you get a result saying so. Tell him in your reply that a job is waiting for his approval and what it will do.
+- Approval: ops and full jobs never start on their own. They appear on Nefer's phone with the exact prompt or operation, and he must tap Approve and enter his approval PIN within 30 minutes for ops jobs or 5 minutes for full jobs, separately for each job. If he denies or lets it expire, you get a result saying so. Tell him in your reply that a job is waiting for his approval and what it will do.
 - Full mode is never left on: propose it again for every job that needs it.
 - Pick codex for image/asset generation and for jobs that must run code or tests; claude for frontend, code and writing. Leave model empty for the default.
 - Workers keep a per-project memory between jobs, so follow-ups to the same folder can be brief.

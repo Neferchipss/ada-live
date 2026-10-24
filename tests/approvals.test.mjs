@@ -61,11 +61,11 @@ test('new approvals: first snapshot seeds, each job reported once', () => {
 test('page wiring: panel, review button, no duplicate strip buttons, cache-bust', () => {
   const read = (f) => fs.readFileSync(fileURLToPath(new URL(`../docs/${f}`, import.meta.url)), 'utf8');
   const app = read('app.js'), html = read('index.html');
-  assert.match(app, /from '\.\/approvals\.mjs\?v=sv-2'/);
+  assert.match(app, /from '\.\/approvals\.mjs\?v=sv-3'/);
   assert.doesNotMatch(html, /id="appr-bar"/, 'the approvals bar is merged into the workers strip line');
   assert.match(app, /data-ws-appr/);
   assert.match(html, /id="approvals-sheet"/);
-  assert.match(html, /app\.js\?v=sv-2/);
+  assert.match(html, /app\.js\?v=sv-3/);
   const strip = app.slice(app.indexOf('function stripRow'), app.indexOf('function extRow'));
   assert.ok(!strip.includes('approvalControls'));
   assert.ok(strip.includes('data-review'));
@@ -108,4 +108,16 @@ test('retry tag only for an open job whose last refusal was a wrong PIN; noteKey
   assert.equal(needsPinRetry(job('a'), NOW), false);
   assert.notEqual(noteKey(withNote({ reason: 'wrong-pin', at: 1 })), noteKey(withNote({ reason: 'wrong-pin', at: 2 })));
   assert.equal(noteKey(job('a')), '');
+});
+
+test('helpers handle 30 minute and 5 minute windows', () => {
+  const ops = job('o', { approvalExpiresAt: NOW + 30 * 60e3 });
+  const full = job('f', { mode: 'full', approvalExpiresAt: NOW + 5 * 60e3 });
+  assert.equal(countdown(30 * 60e3), '30:00');
+  assert.equal(countdown(5 * 60e3), '5:00');
+  assert.equal(openApprovals([ops, full], NOW + 6 * 60e3).length, 1);
+  assert.equal(soonestExpiry([ops, full], NOW), NOW + 5 * 60e3);
+  assert.equal(soonestExpiry([ops, full], NOW + 6 * 60e3), NOW + 30 * 60e3);
+  assert.equal(approvalMessage(ops, NOW + 29 * 60e3).kind, 'none');
+  assert.equal(approvalMessage(ops, NOW + 30 * 60e3).kind, 'expired');
 });
