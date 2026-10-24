@@ -931,6 +931,13 @@ function approvalControls(j) {
   </div>`;
 }
 
+// A queued job the collector is holding back because someone is already working in (or around) its folder.
+// "Run anyway" only skips that check; ops/full jobs still need their own approval and PIN.
+function holdControls(j) {
+  if (j.status !== 'queued' || !j.holdReason) return '';
+  return `<div class="hold-info"><p class="tl-warn">Held: ${esc(j.holdReason)}. It starts by itself when that ends.</p><button class="tl-cancel" data-override="${esc(j.id)}" type="button" ${wsLive && !pendingJobActions.has(j.id) ? '' : 'disabled'}>Run anyway</button></div>`;
+}
+
 // A worker job, drawn like an agent tool call: one line, tap to expand.
 function jobCard(j) {
   if (!j) return '';
@@ -938,8 +945,8 @@ function jobCard(j) {
   const live = j.status === 'running' || j.status === 'queued';
   const icon = j.status === 'running' ? ICON.spin : j.status === 'queued' || awaiting ? ICON.wait : j.status === 'done' ? ICON.ok : ICON.bad;
   const time = j.status === 'running' ? `<span data-since="${j.startedAt}">${since(j.startedAt)}</span>`
-    : j.status === 'queued' ? 'queued' : j.endedAt && j.startedAt ? dur(j.endedAt - j.startedAt) : j.status;
-  return `<details class="tool" data-s="${esc(j.status)}" data-mode="${mode}" data-agent="${esc(j.agent)}" data-job="${esc(j.id)}" ${openJobs.has(j.id) || awaiting ? 'open' : ''}>
+    : j.status === 'queued' ? (j.holdReason ? 'held' : 'queued') : j.endedAt && j.startedAt ? dur(j.endedAt - j.startedAt) : j.status;
+  return `<details class="tool" data-s="${esc(j.status)}" data-mode="${mode}" data-agent="${esc(j.agent)}" data-job="${esc(j.id)}" ${openJobs.has(j.id) || awaiting || (j.status === 'queued' && j.holdReason) ? 'open' : ''}>
     <summary>
       <span class="tl-ico">${icon}</span>
       <span class="tl-main">
@@ -955,6 +962,7 @@ function jobCard(j) {
       ${j.denied ? `<div class="tl-warn">${mode === 'safe' ? 'Safe mode' : 'Tool permissions'} blocked: ${esc(j.denied.join(', '))}</div>` : ''}
       <div class="tl-sec dim"><b>${mode === 'ops' ? 'Exact operation' : "Ada's instructions"}</b>${jobInstructions(j)}</div>
       ${approvalControls(j)}
+      ${holdControls(j)}
       ${mode !== 'safe' && j.status === 'running' ? `<button class="tl-cancel" data-kill="${esc(j.id)}" type="button" ${wsLive ? '' : 'disabled'}>Kill job</button>` : live ? `<button class="tl-cancel" data-cancel="${esc(j.id)}" type="button">Cancel job</button>` : ''}
     </div>
   </details>`;
@@ -969,49 +977,97 @@ let stripKey = '';
 
 function stripStatus(j) {
   if (j.status === 'awaiting-approval') return approvalOpen(j) ? 'waiting for your approval' : 'approval expired';
+  if (j.status === 'queued' && j.holdReason) return 'held';
   return j.status === 'killing' ? 'stopping' : j.status;
 }
 
-function stripRow(j) {
+const SRC_LABEL = { terminal: 'Terminal', 'ada-job': 'Ada job', task: 'Task' };
+const placeSub = (sub) => `› ${sub || 'project root'}`;
+
+function stripRow(it) {
+  if (it.ext) return extRow(it);
+  const j = it.job;
   const mode = jobMode(j);
+  const held = j.status === 'queued' && j.holdReason;
   const icon = j.status === 'running' || j.status === 'killing' ? ICON.spin : ICON.wait;
   const from = j.status === 'running' ? j.startedAt : j.createdAt;
   const since0 = Number.isFinite(from) ? from : Date.now();
   const kill = mode !== 'safe' && j.status === 'running' ? `<button class="tl-cancel" data-kill="${esc(j.id)}" type="button" ${wsLive ? '' : 'disabled'}>Kill job</button>` : '';
-  return `<div class="ws-row" role="button" tabindex="0" data-s="${esc(j.status)}" data-mode="${mode}" data-agent="${esc(j.agent)}" data-focus="${esc(j.id)}">
+  return `<div class="ws-row" role="button" tabindex="0" data-s="${esc(j.status)}"${held ? ' data-held="1"' : ''} data-mode="${mode}" data-agent="${esc(j.agent)}" data-focus="${esc(j.id)}">
     <div class="ws-line">
       <span class="tl-ico">${icon}</span>
       <span class="tl-main">
         <span class="tl-title">${modeBadge(j)}${esc(j.title)}</span>
-        <span class="tl-sub">${esc(agentLabel[j.agent] || j.agent)} · ${esc(short(j.folder).split(' / ').pop())} · ${esc(stripStatus(j))}</span>
+        <span class="tl-sub"><span class="ws-src">${SRC_LABEL['ada-job']}</span> · ${esc(agentLabel[j.agent] || j.agent)} · ${esc(placeSub(it.sub))} · ${esc(stripStatus(j))}</span>
       </span>
       <span class="tl-time"><span data-since="${since0}">${since(since0)}</span></span>
     </div>
-    ${kill}${approvalControls(j)}
+    ${kill}${approvalControls(j)}${holdControls(j)}
   </div>`;
+}
+
+// Someone else's work (a terminal session or a delegated task): read-only, Ada can't kill or approve it.
+function extRow({ w, sub }) {
+  const label = w.status === 'blocked' ? 'waiting on you' : 'working';
+  return `<div class="ws-row ws-ext" data-s="${esc(w.status)}" data-agent="${esc(w.agent)}">
+    <div class="ws-line">
+      <span class="tl-ico">${w.status === 'blocked' ? ICON.wait : ICON.spin}</span>
+      <span class="tl-main">
+        <span class="tl-title">${esc(w.title || 'Session')}</span>
+        <span class="tl-sub"><span class="ws-src">${esc(SRC_LABEL[w.source] || w.source)}</span> · ${esc(agentLabel[w.agent] || w.agent)} · ${esc(placeSub(sub))} · ${label}</span>
+      </span>
+      <span class="tl-time"><span data-ago="${w.since}">${ago(w.since)}</span></span>
+    </div>
+  </div>`;
+}
+
+// Everything active, as rows grouped by project: Ada's jobs (full controls) plus terminal sessions and tasks from the active-work map.
+function stripItems() {
+  const rank = (j) => ACTIVE_JOB.indexOf(j.status);
+  const jobs = (data?.chat?.jobs || []).filter((j) => ACTIVE_JOB.includes(j.status));
+  const place = new Map(); // job id -> the map group it sits in
+  const items = [];
+  for (const g of data?.activeMap || []) {
+    for (const w of g.workers) {
+      if (w.source === 'ada-job') place.set(w.id, g);
+      else items.push({ ext: true, project: g.project, sub: g.subfolder, w, r: 9 });
+    }
+  }
+  for (const j of jobs) {
+    const g = place.get(j.id);
+    items.push({ job: j, project: g?.project || short(j.folder).split(' / ').pop(), sub: g?.subfolder || '', r: rank(j) });
+  }
+  return items.sort((a, b) => a.project.localeCompare(b.project) || a.r - b.r);
 }
 
 function renderStrip() {
   const el = $('#work-strip');
-  const rank = (j) => ACTIVE_JOB.indexOf(j.status);
-  const jobs = (data?.chat?.jobs || []).filter((j) => ACTIVE_JOB.includes(j.status)).sort((a, b) => rank(a) - rank(b));
-  const key = JSON.stringify([jobs, jobs.map(approvalOpen), wsLive, data?.chat?.fullModePinSet, stripOpen]);
+  const items = stripItems();
+  const jobs = items.filter((i) => i.job).map((i) => i.job);
+  const key = JSON.stringify([items, jobs.map(approvalOpen), wsLive, data?.chat?.fullModePinSet, stripOpen]);
   if (key === stripKey) return;
   stripKey = key;
 
   const waiting = jobs.filter((j) => j.status === 'awaiting-approval').length;
-  const working = jobs.length - waiting;
-  const count = [working ? `${working} working` : '', waiting ? `${waiting} to approve` : ''].filter(Boolean).join(' · ');
+  const held = jobs.filter((j) => j.status === 'queued' && j.holdReason).length;
+  const term = items.length - jobs.length;
+  const working = jobs.length - waiting - held;
+  const count = [working ? `${working} working` : '', term ? `${term} in terminal` : '', held ? `${held} held` : '', waiting ? `${waiting} to approve` : ''].filter(Boolean).join(' · ');
   $('#ch-count').textContent = count ? ` · ${count}` : '';
   const badge = $('#tab-badge');
-  badge.hidden = !jobs.length;
-  badge.textContent = String(jobs.length);
+  badge.hidden = !items.length;
+  badge.textContent = String(items.length);
 
-  el.hidden = !jobs.length;
-  if (!jobs.length) { el.innerHTML = ''; stripOpen = false; return; }
-  const shown = stripOpen ? jobs : jobs.slice(0, STRIP_MAX);
-  const more = jobs.length - STRIP_MAX;
-  el.innerHTML = shown.map(stripRow).join('')
+  el.hidden = !items.length;
+  if (!items.length) { el.innerHTML = ''; stripOpen = false; return; }
+  const shown = stripOpen ? items : items.slice(0, STRIP_MAX);
+  const more = items.length - STRIP_MAX;
+  let project = null;
+  el.innerHTML = shown.map((it) => {
+    const head = it.project !== project ? `<div class="ws-proj">${esc(it.project)}</div>` : '';
+    project = it.project;
+    return head + stripRow(it);
+  }).join('')
     + (more > 0 ? `<button class="ws-more" data-ws-more type="button">${stripOpen ? 'Show less' : `+${more} more`}</button>` : '');
   syncJobActions();
 }
@@ -1150,10 +1206,11 @@ function syncJobActions() {
     const left = Number(el.dataset.approvalExpires) - Date.now();
     el.textContent = left > 0 ? `Approval expires in ${dur(left)}.` : 'Approval expired. Ask Ada to propose the job again.';
   });
-  document.querySelectorAll('[data-approve], [data-deny], [data-kill]').forEach((el) => {
-    const id = el.dataset.approve || el.dataset.deny || el.dataset.kill;
+  document.querySelectorAll('[data-approve], [data-deny], [data-kill], [data-override]').forEach((el) => {
+    const id = el.dataset.approve || el.dataset.deny || el.dataset.kill || el.dataset.override;
     const j = currentJob(id);
-    const allowed = el.dataset.kill ? j?.status === 'running' && jobMode(j) !== 'safe' : approvalOpen(j) && (!el.dataset.approve || data?.chat?.fullModePinSet);
+    const allowed = el.dataset.override ? j?.status === 'queued' && !!j.holdReason
+      : el.dataset.kill ? j?.status === 'running' && jobMode(j) !== 'safe' : approvalOpen(j) && (!el.dataset.approve || data?.chat?.fullModePinSet);
     el.disabled = !wsLive || !allowed || pendingJobActions.has(id);
   });
   if (approvalTarget) {
@@ -1199,6 +1256,12 @@ function jobActionClick(e) {
   }
   const kill = e.target.closest('[data-kill]');
   if (kill) { sendJobAction(kill, { type: 'kill', job: kill.dataset.kill }); return true; }
+  const override = e.target.closest('[data-override]');
+  if (override) {
+    const j = currentJob(override.dataset.override);
+    if (j?.status === 'queued' && j.holdReason) sendJobAction(override, { type: 'override-hold', job: j.id });
+    return true;
+  }
   return false;
 }
 
@@ -1322,8 +1385,35 @@ function taskCard(k) {
   </details>`;
 }
 
+// What changed in the projects (commits, branches, uncommitted files, finished terminal sessions), whoever did it.
+let changesOpen = false;
+
+function changeText(e) {
+  switch (e.kind) {
+    case 'commit': return `Commit ${e.hash}: ${e.subject}`;
+    case 'branch': return `Branch ${e.from || '?'} → ${e.to}`;
+    case 'dirty': return `${e.count} uncommitted file${e.count === 1 ? '' : 's'}${e.files?.length ? `: ${e.files.join(', ')}` : ''}`;
+    case 'session': return `${e.agent} session ended${e.sub ? ` in ${e.sub}` : ''} after ${Math.max(1, Math.round(e.durMs / 60e3))} min${e.note ? `: ${e.note}` : ''}`;
+    default: return e.kind;
+  }
+}
+
+function renderChanges() {
+  const list = data.journal || [];
+  if (!list.length) { $('#act-changes').innerHTML = ''; return; }
+  const groups = new Map(); // newest first, so the busiest project leads
+  for (const e of list) { if (!groups.has(e.project)) groups.set(e.project, []); groups.get(e.project).push(e); }
+  $('#act-changes').innerHTML = `<details class="chg" id="chg-all" ${changesOpen ? 'open' : ''}>
+    <summary><h2 class="sec">Recent changes <small>${list.length}</small></h2></summary>
+    ${[...groups].map(([project, es]) => `<div class="chg-proj"><b>${esc(project)}</b>
+      <ul>${es.map((e) => `<li data-kind="${esc(e.kind)}"><span class="chg-text">${esc(changeText(e))}</span><span class="chg-meta">${esc(e.by || 'unknown')} · <time data-ago="${e.t}">${ago(e.t)}</time></span></li>`).join('')}</ul>
+    </div>`).join('')}
+  </details>`;
+}
+
 function renderActivity() {
   const tasks = data.tasks || [];
+  renderChanges();
   const approvals = (data.chat?.jobs || []).filter((j) => j.status === 'awaiting-approval');
   $('#act-approvals').innerHTML = approvals.length ? `<h2 class="sec">Awaiting approval <small>${approvals.length}</small></h2>${approvals.map(jobCard).join('')}` : '';
   const running = tasks.filter((k) => k.status === 'running' || k.status === 'queued');
@@ -1370,7 +1460,9 @@ function bindActivity() {
     renderActivity();
   });
   $('#view-activity').addEventListener('toggle', (e) => {
-    const d = e.target; if (!d.dataset?.task) return;
+    const d = e.target;
+    if (d.id === 'chg-all') { changesOpen = d.open; return; }
+    if (!d.dataset?.task) return;
     if (d.open) openTasks.add(d.dataset.task); else openTasks.delete(d.dataset.task);
   }, true);
 }

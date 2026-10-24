@@ -362,6 +362,24 @@ a.kind:active { opacity: 0.7; }
 .ws-more { justify-self: center; background: none !important; border: 1px solid var(--line) !important; border-radius: 999px; padding: 4px 14px; font: 12px var(--mono) !important; color: var(--muted) !important; cursor: pointer; }
 .tool.ws-flash { box-shadow: 0 0 0 2px var(--amber); transition: box-shadow .3s; }
 @keyframes ws-pulse { 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--k) 22%, transparent); } }
+.ws-proj { font: 600 10.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); margin: 6px 2px 0; }
+.ws-src { color: var(--text); }
+.ws-ext { cursor: default; }
+.ws-row[data-held='1'] { border-color: rgba(240, 164, 58, .55); border-left-color: var(--amber); animation: none; }
+.hold-info { display: grid; gap: 8px; }
+.hold-info .tl-warn { margin: 0; overflow-wrap: anywhere; }
+.hold-info .tl-cancel { justify-self: start; }
+.chg > summary { cursor: pointer; list-style: none; }
+.chg > summary::-webkit-details-marker { display: none; }
+.chg > summary .sec { display: inline-block; margin: 18px 0 8px; }
+.chg > summary .sec::after { content: ' ▸'; color: var(--dim); }
+.chg[open] > summary .sec::after { content: ' ▾'; }
+.chg-proj { margin: 0 0 12px; }
+.chg-proj > b { font: 600 12px var(--mono); color: var(--text); }
+.chg-proj ul { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; }
+.chg-proj li { display: grid; gap: 2px; border-left: 2px solid var(--line); padding-left: 10px; }
+.chg-text { font-size: 13px; overflow-wrap: anywhere; }
+.chg-meta { font: 11px var(--mono); color: var(--dim); }
 
 /* Usage-limit banner (home page) + badge on the account card */
 #limits { display: grid; gap: 8px; }

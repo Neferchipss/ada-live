@@ -34,6 +34,14 @@ function looksLikeProject(dir, entries) {
   return entries.some((e) => /\.(uproject|sln)$/i.test(e.name));
 }
 
+// Path from a `git status --porcelain` line ("XY path", "XY old -> new", quoted when it has odd characters).
+export function porcelainPath(line) {
+  let p = line.slice(3);
+  const arrow = p.indexOf(' -> ');
+  if (arrow >= 0) p = p.slice(arrow + 4);
+  return p.replace(/^"(.*)"$/, '$1');
+}
+
 export class WorkMap {
   constructor(root) {
     this.root = root;
@@ -141,7 +149,8 @@ export class WorkMap {
     }
   }
 
-  async refreshGit(limit = 12) {
+  // hook (optional): { prev(p) -> { head, branch } the journal last saw, onUpdate(p, { head, branch, changed, paths, commits }) }.
+  async refreshGit(limit = 12, hook = null) {
     const batch = [...this.dirtyGit].slice(0, limit);
     await Promise.all(batch.map(async (p) => {
       this.dirtyGit.delete(p);
@@ -149,7 +158,7 @@ export class WorkMap {
         const opts = { cwd: p.gitPath || p.path, windowsHide: true, timeout: 8000 };
         const [{ stdout: st }, { stdout: lg }, remote] = await Promise.all([
           run('git', ['status', '--porcelain=v1', '-b'], opts),
-          run('git', ['log', '-1', '--format=%h%x1f%s%x1f%cI'], opts).catch(() => ({ stdout: '' })),
+          run('git', ['log', '-1', '--format=%h%x1f%s%x1f%cI%x1f%H'], opts).catch(() => ({ stdout: '' })),
           run('git', ['remote', 'get-url', 'origin'], opts).then((r) => r.stdout.trim()).catch(() => ''),
         ]);
         const gh = remote.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
@@ -158,13 +167,26 @@ export class WorkMap {
         const lines = st.split('\n').filter(Boolean);
         const head = lines.shift() || '';
         const m = head.match(/^## ([^.\s]+)(?:\.\.\.\S+)?(?: \[(.+)\])?/);
-        const [hash, subject, when] = lg.trim().split('\x1f');
+        const [hash, subject, when, full] = lg.trim().split('\x1f');
         p.git = {
           branch: m?.[1] || '?',
           tracking: m?.[2] || '',
           changed: lines.length,
           last: hash ? { hash, subject, t: Date.parse(when) } : null,
         };
+        if (hook) {
+          const { head: prev, branch: prevBranch } = hook.prev?.(p) || {};
+          let commits = [];
+          if (prev && full && prev !== full && p.git.branch === prevBranch) {
+            // Commits since the last look. A rewritten history has no such range: fall back to the newest commit.
+            commits = await run('git', ['log', `${prev}..${full}`, '-n', '20', '--format=%h%x1f%s%x1f%cI'], opts)
+              .then((r) => r.stdout.split('\n').filter(Boolean).map((l) => { const [h, sj, c] = l.split('\x1f'); return { hash: h, subject: sj, ct: Date.parse(c) }; }))
+              .catch(() => [{ hash, subject, ct: Date.parse(when) }]);
+          }
+          // Untracked folders are collapsed in the summary; list their files so names (and noise/secret filtering) are real.
+          const all = await run('git', ['status', '--porcelain=v1', '-uall'], opts).then((r) => r.stdout.split('\n').filter(Boolean).slice(0, 300)).catch(() => lines);
+          hook.onUpdate?.(p, { head: full || '', branch: p.git.branch, changed: lines.length, paths: all.map(porcelainPath), commits });
+        }
       } catch {
         p.git = p.git || null;
       }

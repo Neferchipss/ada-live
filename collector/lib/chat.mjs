@@ -15,6 +15,7 @@ import { limits as sharedLimits } from './limits.mjs';
 import { clip } from './util.mjs';
 import { MediaStore, checkAttachPath, cacheKey, validKey, formatSize, transcribe, MAX_ATTACH_PER_REPLY, CHUNK } from './media.mjs';
 import { UploadManager, UPLOAD } from './uploads.mjs';
+import { activeMap, findConflict, liveLine } from './journal.mjs';
 
 const THREAD = 'ada';
 const MAX_WORKERS = 2;
@@ -24,6 +25,8 @@ const CLOCK_SKEW = 10 * 60e3;
 const RECAP_MESSAGES = 30;
 const newId = () => crypto.randomBytes(5).toString('hex');
 const MAX_NEED = 800;       // chunks one media request may ask for
+const HOLD_NOTICE_MS = 10 * 60e3;   // a held job is announced in chat after this long
+const DIGEST_FIRST_MS = 24 * 3600e3; // first activity digest looks back this far
 const MAX_SENDS = 3;        // media transfers running at once
 const THUMB_KEEP = 16;      // newest attachments that keep their inline thumbnail in the snapshot
 
@@ -69,6 +72,9 @@ export class ChatHub {
     this.killProcessTree = services.killProcessTree || killProcessTree;
     this.appendTaskEvent = services.appendTaskEvent || appendTaskEvent;
     this.limits = services.limits || sharedLimits;
+    // Who else is working: () => { sessions, tasks } (external Claude/Codex sessions and delegated tasks), and the change journal.
+    this.external = services.external || (() => ({ sessions: [], tasks: [] }));
+    this.journal = services.journal || null;
     this.policy = services.policy || new FullModePolicy({ stateDir, workRoot: this.workRoot, projects, now: this.now });
     this.approvalTimer = null;
     this.pumping = false;
@@ -150,6 +156,7 @@ export class ChatHub {
     if (cmd.type === 'approve') return this.#approve(cmd);
     if (cmd.type === 'deny') return this.#deny(cmd);
     if (cmd.type === 'kill') return this.#kill(cmd.job);
+    if (cmd.type === 'override-hold') return this.#overrideHold(cmd);
     if (cmd.type === 'stop') return this.#stop();
     if (cmd.type === 'reset') return this.#reset();
     if (cmd.type === 'media-get') return this.#mediaGet(cmd);
@@ -325,6 +332,12 @@ To start workers, end your reply with exactly one jobs block:
 - Don't start jobs for questions you can answer by reading.
 Results arrive in later messages marked [Job results]. Tell Nefer what changed, where, and anything he must do himself.
 
+## Activity digest and busy folders
+Nefer also works directly in terminals (Claude Code, Codex) inside these projects, and so do other tools. The collector watches the projects and records commits, branch changes, uncommitted file names and finished terminal sessions in a journal, whoever made them. When something happened since your last turn, your message starts with an [Activity since your last turn] block: changes grouped by project, newest first, each tagged with who did it ("Claude terminal session", "Codex", "Ada job" or "unknown"). It lists names and subjects only, never file contents; read the files if you need detail. A [Live now] line after it lists where someone is working right now.
+- Terminal sessions are visible to you only this way. Use it to answer "what did I change in X?" and to notice work you didn't start.
+- Before writing a worker prompt for a project, read its notes file ${path.join(GHOST_PRIVATE, 'projects', '<name>.md')} (if it exists) and fold in anything the digest says changed.
+- A folder named in [Live now] is busy. Do not start jobs in a busy folder, or above or below it, unless Nefer says to. If you propose one anyway the collector holds it until the session ends; Nefer can tap Run anyway. Tell him when you are holding off and why.
+
 ## Showing files to Nefer
 To put a file on his phone, end your reply with one attach block (it can sit next to a jobs block):
 <attach>
@@ -363,6 +376,22 @@ ${list}`;
     return lines.length ? `[Earlier in this chat, while another brain was answering]\n${lines.join('\n\n')}` : '';
   }
 
+  // What changed in the projects since Ada's last turn (terminal work included), and who is busy where right now.
+  #activityBlock() {
+    const t = this.t;
+    const now = this.now();
+    const since = Number.isFinite(t.activitySince) ? t.activitySince : now - DIGEST_FIRST_MS;
+    t.activitySince = now;
+    let digest = '', live = '';
+    try { digest = this.journal ? this.journal.digest(since) : ''; } catch { /* journal is optional */ }
+    try {
+      const map = activeMap({ ...this.#ctx(), jobs: this.state.jobs });
+      live = map.length ? liveLine(map) : '';
+    } catch { /* ditto */ }
+    if (!digest && !live) return '';
+    return ['[Activity since your last turn]', digest || '(no recorded changes)', live].filter(Boolean).join('\n');
+  }
+
   #headTurn() {
     const t = this.t;
     t.busy = true;
@@ -378,6 +407,8 @@ ${list}`;
     if (unanswered.length) parts.push(unanswered.map((m) => [`[Nefer] ${m.text || '(no message, just the attachments)'}`, ...attachmentLines(m.atts)].join('\n')).join('\n\n'));
     unanswered.forEach((m) => { m.answered = true; });
     if (!parts.length) { t.busy = false; return; }
+    const activity = this.#activityBlock();
+    if (activity) parts.unshift(activity);
     const lastUser = unanswered.at(-1);
 
     const run = this.runAgent({
@@ -596,17 +627,74 @@ ${list}`;
     return j;
   }
 
+  // ---- conflict guard: don't start a job where Nefer (or a task) is already working ----
+
+  #ctx() {
+    let ext = {};
+    try { ext = this.external() || {}; } catch { /* fail open: a broken probe must not stall every job */ }
+    return { projects: this.projects(), workRoot: this.workRoot, sessions: ext.sessions || [], tasks: ext.tasks || [], own: this.ownSessions(), now: this.now() };
+  }
+
+  /** Sets or clears holdReason on every queued job. Ops jobs and jobs Nefer overrode are exempt. Returns true if anything changed. */
+  #refreshHolds() {
+    let changed = false;
+    const ctx = this.#ctx();
+    for (const j of this.state.jobs) {
+      if (j.status !== 'queued') continue;
+      const why = j.mode === 'ops' || j.holdOverride ? null : findConflict(j.folder, ctx);
+      if ((why || undefined) !== j.holdReason) {
+        j.holdReason = why || undefined;
+        j.heldSince = why ? (j.heldSince || this.now()) : undefined;
+        changed = true;
+      }
+      if (why && !j.holdNotified && this.now() - j.heldSince > HOLD_NOTICE_MS) {
+        j.holdNotified = true;
+        this.#post({ role: 'system', text: `"${j.title}" has been waiting over 10 minutes: ${why}. It starts by itself when that ends; tap Run anyway to start it now.` });
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  #overrideHold(cmd) {
+    const j = typeof cmd.job === 'string' ? this.state.jobs.find((x) => x.id === cmd.job) : null;
+    if (!j || j.status !== 'queued' || !j.holdReason) return 'not held';
+    // Only the guard is skipped. ops/full jobs still pass policy.authorizeStart (approval, PIN, expiry) in #startElevated.
+    j.holdOverride = true;
+    j.holdReason = undefined; j.heldSince = undefined;
+    this.#changed();
+    this.#pump();
+    return null;
+  }
+
+  /** Called by the collector every tick: holds are re-checked even when nothing else happened. */
+  tick() {
+    const expired = this.#expireApprovals();
+    const held = this.#refreshHolds();
+    if (expired || held) this.#changed();
+    this.#pump();
+  }
+
+  /** Session ids that belong to Ada herself (head and workers); they are not "someone else's terminal". */
+  ownSessions() {
+    const ids = new Set([...this.headSessions(), ...Object.values(this.state.projectSessions || {}), ...Object.values(this.t.heads || {})]);
+    for (const j of this.state.jobs) if (j.session) ids.add(j.session);
+    return ids;
+  }
+
   #pump() {
     if (this.pumping) return;
     this.pumping = true;
     try {
-      // Every pass moves one job out of 'queued', so this ends.
+      const held = this.#refreshHolds();
+      // Every pass moves one job out of 'queued', so this ends. Held jobs are skipped, not waited on.
       for (;;) {
         const running = this.state.jobs.filter((j) => j.status === 'running').length;
-        const next = this.state.jobs.find((j) => j.status === 'queued');
+        const next = this.state.jobs.find((j) => j.status === 'queued' && !j.holdReason);
         if (!next || running >= MAX_WORKERS) break;
         this.#startJob(next);
       }
+      if (held) this.#changed();
     } finally { this.pumping = false; }
   }
 
@@ -615,6 +703,7 @@ ${list}`;
     if (j.mode !== 'safe') return this.#startElevated(j);
     j.status = 'running';
     j.startedAt = Date.now();
+    j.holdReason = undefined; j.heldSince = undefined;
     const key = `${j.agent}|${j.folder.toLowerCase()}`;
     const resume = this.state.projectSessions[key] || null;
     const prompt = `Job from Ada (Nefer's orchestrator), sent from his phone.
@@ -647,6 +736,7 @@ ${j.prompt}`;
     if (auditError) { this.#finishJob(j, { ok: false, text: '', error: `Not started ${auditError}` }, 'failed', 'refused'); return; }
     j.status = 'running';
     j.startedAt = this.now();
+    j.holdReason = undefined; j.heldSince = undefined;
     this.appendTaskEvent({ id: j.id, mode: j.mode, agent: j.agent, title: j.title, cwd: j.folder, by: 'ada-chat', status: 'running', preview: 'Started (approved on the phone)' });
     let run;
     try {

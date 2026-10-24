@@ -24,6 +24,7 @@ import { collectAccounts } from './lib/accounts.mjs';
 import { limits } from './lib/limits.mjs';
 import { normPath } from './lib/util.mjs';
 import { FeedPublisher } from './lib/feed.mjs';
+import { Journal, activeMap, attribute, sessionActive } from './lib/journal.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(HERE, '..', 'docs', 'data', 'live.enc.json');
@@ -46,6 +47,14 @@ let stats = null;
 let relay = null;
 let accounts = [];
 let hub = null;
+// Nefer's own terminals and delegated tasks, as last read. The chat's conflict guard and the git journal read this;
+// it is refreshed by every snapshot and re-read here when older than a few seconds.
+const journal = once ? null : new Journal();
+let ext = { t: 0, sessions: [], tasks: [] };
+function externals() {
+  if (Date.now() - ext.t > 8000) ext = { t: Date.now(), sessions: [...collectClaude(), ...collectCodex()], tasks: collectTasks() };
+  return ext;
+}
 const refreshAccounts = () => collectAccounts().then((a) => { accounts = a; limits.fromAccounts(a); }).catch((e) => console.error('[accounts]', e));
 
 function presence(claude) {
@@ -80,6 +89,7 @@ function snapshot() {
   const claude = collectClaude();
   const codex = collectCodex();
   const tasks = collectTasks();
+  ext = { t: Date.now(), sessions: [...claude, ...codex], tasks };
   const hidden = hub?.headSessions() || new Set();
   const sessions = [...claude, ...codex].filter((x) => !hidden.has(x.id)).sort((a, b) => b.lastActivity - a.lastActivity);
 
@@ -106,6 +116,9 @@ function snapshot() {
     accounts,
     limits: limits.active(), // services at their usage limit: [{ service, limited, resetText, resetsAt, at }]
     chat: hub?.view() || null,
+    // Who is working where, per project folder (terminal sessions, Ada jobs, tasks), and what recently changed in the projects.
+    activeMap: activeMap({ projects, workRoot: cfg.workRoot, sessions: ext.sessions, jobs: hub?.state.jobs || [], tasks, own: hub?.ownSessions() || new Set() }),
+    journal: journal?.recent(50) || [],
   };
 }
 
@@ -135,8 +148,34 @@ function write(snap) {
   return true;
 }
 
+// Commits don't touch watched files, so projects with live or just-finished work are re-read every tick.
+function watchActiveRepos() {
+  const e = externals();
+  const now = Date.now();
+  const cwds = [
+    ...e.sessions.filter((x) => x.cwd && (sessionActive(x, now) || now - x.lastActivity < 3 * 60e3)).map((x) => x.cwd),
+    ...(hub?.state.jobs || []).filter((j) => j.status === 'running').map((j) => j.folder),
+  ];
+  for (const c of cwds) { const p = work.projectFor(c); if (p?.isRepo) work.dirtyGit.add(p); }
+}
+
+// What the git refresh reports goes into the journal, credited to whoever was working in that project.
+function gitHook() {
+  if (!journal) return null;
+  const e = externals();
+  const own = hub?.ownSessions() || new Set();
+  return {
+    prev: (p) => journal.seen(p.path),
+    onUpdate: (p, info) => journal.observeGit(p, info, attribute(p.path, { sessions: e.sessions, jobs: hub?.state.jobs || [], tasks: e.tasks, own })),
+  };
+}
+
 async function tick() {
-  await Promise.all([work.refreshGit(), refreshAccounts()]);
+  watchActiveRepos();
+  await Promise.all([work.refreshGit(12, gitHook()), refreshAccounts()]);
+  const e = externals();
+  journal?.observeSessions(e.sessions, { projects: work.list(), workRoot: cfg.workRoot, own: hub?.ownSessions() });
+  hub?.tick(); // re-check held jobs now that sessions may have ended
   const snap = snapshot();
   const wrote = write(snap);
   const a = snap.ada;
@@ -198,7 +237,7 @@ if (once) {
     relay = new RelayClient(cfg.relayUrl, cfg.relayKey, (n) => { if (n > 0 && !streaming) streamLoop(); }, onCommand);
   }
   work.watch();
-  await work.refreshGit(500);
+  await work.refreshGit(500, gitHook());
   await work.refreshGithub(GH_CACHE);
   await tick();
   setInterval(() => tick().catch((e) => console.error('[collector]', e)), cfg.intervalSec * 1000);
