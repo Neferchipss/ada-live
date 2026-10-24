@@ -176,6 +176,11 @@ function ago(t) {
   return `${Math.round(s / 86400 / 30)}mo`;
 }
 
+function agoFull(t) {
+  const age = ago(t);
+  return age === 'now' ? 'just now' : age === '—' ? age : `${age} ago`;
+}
+
 function short(p) {
   if (!p) return '';
   const norm = p.replace(/\//g, '\\');
@@ -209,7 +214,8 @@ const agentLabel = { claude: 'Claude', codex: 'Codex', chatgpt: 'ChatGPT', task:
 function render() {
   if (!data) return;
   renderPresence();
-  renderAccounts();
+  limitKey = ''; // renderLimits redraws the accounts too, so the LIMIT badges match
+  renderLimits();
   renderPC();
   renderFlow();
   renderChat();
@@ -290,15 +296,53 @@ function meter(label, w) {
   </div>`;
 }
 
+function higgsfieldCard(a) {
+  const hasCredits = !a.error && Number.isFinite(a.credits) && a.credits >= 0;
+  return `
+    <article class="acct" data-svc="higgsfield">
+      <div class="a-head">
+        <span class="a-name">${esc(a.name)}</span>
+        ${a.plan ? `<span class="pill r">${esc(a.plan)}</span>` : ''}
+        <span class="a-fresh">${a.asOf ? `updated <span data-ago="${a.asOf}" data-full-ago>${agoFull(a.asOf)}</span>` : ''}</span>
+      </div>
+      <div class="a-email">${esc(a.email || 'not signed in')}</div>
+      <div class="a-surf">${(a.surfaces || []).map((s) => `<span class="pill">${esc(s)}</span>`).join('')}</div>
+      ${a.error ? `<div class="a-err">${esc(a.error)}</div>` : ''}
+      ${hasCredits ? `<div class="a-credits"><strong>${esc(a.credits.toLocaleString(undefined, { maximumFractionDigits: 20 }))}</strong><span>credits</span></div>` : '<div class="a-credit-empty">Credit balance unavailable</div>'}
+      <p class="a-note">${esc(a.shared || '')}</p>
+    </article>`;
+}
+
+// Usage-limit banners. The collector sends data.limits; a flag whose reset time has passed is ignored here
+// too, so a banner never outlives its reset even if the feed is a little stale.
+const limitNames = { claude: 'Claude', chatgpt: 'ChatGPT / Codex' };
+let limitKey = '';
+const activeLimits = () => (data?.limits || []).filter((l) => l?.limited && limitNames[l.service] && (!l.resetsAt || l.resetsAt > Date.now()));
+const isLimited = (service) => activeLimits().some((l) => l.service === service);
+
+function renderLimits() {
+  const list = activeLimits();
+  const key = JSON.stringify(list.map((l) => [l.service, l.resetText, l.resetsAt]));
+  if (key === limitKey) return;
+  limitKey = key;
+  $('#limits').innerHTML = list.map((l) => `
+    <div class="limit-banner" role="alert" data-svc="${esc(l.service)}">
+      <span class="lb-ico">!</span>
+      <div><b>${esc(limitNames[l.service])} limit reached</b><span>${l.resetText ? `resets ${esc(l.resetText)}` : 'reset time unknown'}</span></div>
+    </div>`).join('');
+  renderAccounts();
+}
+
 function renderAccounts() {
   const el = $('#accts');
   const list = data.accounts || [];
   if (!list.length) { el.innerHTML = '<div class="empty tile">No account info yet — the collector adds it once it restarts.</div>'; return; }
-  el.innerHTML = list.map((a) => `
+  el.innerHTML = list.map((a) => a.service === 'higgsfield' ? higgsfieldCard(a) : `
     <article class="acct" data-svc="${esc(a.service)}">
       <div class="a-head">
         <span class="a-name">${esc(a.name)}</span>
         ${a.plan ? `<span class="pill r">${esc(a.plan)}</span>` : ''}
+        ${isLimited(a.service) ? '<span class="pill limit">LIMIT</span>' : ''}
         <span class="a-fresh">${a.live ? 'live' : a.asOf ? `as of <span data-ago="${a.asOf}">${ago(a.asOf)}</span>` : ''}</span>
       </div>
       <div class="a-email">${esc(a.email || 'not signed in')}</div>
@@ -452,9 +496,11 @@ function projectCard(p) {
 
 // Refresh relative times and the connection badge every few seconds.
 function tickClock() {
-  document.querySelectorAll('[data-ago]').forEach((el) => { el.textContent = ago(Number(el.dataset.ago)); });
+  document.querySelectorAll('[data-ago]').forEach((el) => { el.textContent = (el.hasAttribute('data-full-ago') ? agoFull : ago)(Number(el.dataset.ago)); });
   document.querySelectorAll('[data-until]').forEach((el) => { el.textContent = until(Number(el.dataset.until)); });
   document.querySelectorAll('[data-since]').forEach((el) => { el.textContent = since(Number(el.dataset.since)); });
+  syncJobActions();
+  if (data) renderLimits();
   if (!data || paused) return;
   const age = Date.now() - (data.generatedAt || 0);
   if (!lastFetchOk) return;
@@ -468,6 +514,8 @@ function tickClock() {
 let chatKey = '';               // skip re-rendering when nothing changed
 const outbox = new Map();       // cid -> { text, t, failed, why }
 const openJobs = new Set();
+let approvalTarget = null; // Job id + approval challenge only; never a PIN.
+const pendingJobActions = new Set();
 let brainPref = { agent: 'claude', model: '' };
 try { brainPref = { ...brainPref, ...JSON.parse(localStorage.getItem('ada-brain') || '{}') }; } catch {}
 const rid = () => [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -520,28 +568,55 @@ function dur(ms) {
 }
 const since = (t) => dur(Date.now() - t);
 
+const jobMode = (j) => j.mode === 'full' || j.mode === 'ops' ? j.mode : 'safe';
+const modeBadge = (j) => jobMode(j) === 'safe' ? '' : `<span class="mode-badge" data-mode="${jobMode(j)}">${jobMode(j).toUpperCase()}</span>`;
+const approvalOpen = (j) => j?.status === 'awaiting-approval' && Number.isFinite(j.approvalExpiresAt) && Date.now() < j.approvalExpiresAt;
+const currentJob = (id) => data?.chat?.jobs?.find((j) => j.id === id);
+function operationText(j) {
+  const op = j.operation;
+  return op ? JSON.stringify({ name: op.name, cwd: op.cwd, command: op.command, args: op.args }, null, 2) : String(j.op || 'Operation unavailable');
+}
+
+function jobInstructions(j) {
+  if (jobMode(j) === 'safe') return `<div class="md">${md(j.prompt || '')}</div>`;
+  return `<pre class="job-instructions">${esc(jobMode(j) === 'ops' ? operationText(j) : j.prompt || '')}</pre>`;
+}
+
+function approvalControls(j) {
+  if (j.status !== 'awaiting-approval') return '';
+  const enabled = wsLive && approvalOpen(j) && data?.chat?.fullModePinSet && !pendingJobActions.has(j.id);
+  return `<div class="approval-info">
+    <p class="tl-warn" data-approval-expires="${j.approvalExpiresAt}">${approvalOpen(j) ? `Approval expires in ${dur(j.approvalExpiresAt - Date.now())}.` : 'Approval expired. Ask Ada to propose the job again.'}</p>
+    ${!data?.chat?.fullModePinSet ? '<p class="tl-warn">Set an approval PIN on the laptop: <code>node tools/set-fullmode-pin.mjs</code></p>' : ''}
+    <div class="job-buttons"><button class="tl-approve" data-approve="${esc(j.id)}" type="button" ${enabled ? '' : 'disabled'}>Approve with PIN</button><button class="tl-cancel" data-deny="${esc(j.id)}" type="button" ${wsLive && approvalOpen(j) && !pendingJobActions.has(j.id) ? '' : 'disabled'}>Deny</button></div>
+  </div>`;
+}
+
 // A worker job, drawn like an agent tool call: one line, tap to expand.
 function jobCard(j) {
   if (!j) return '';
+  const mode = jobMode(j), awaiting = j.status === 'awaiting-approval';
   const live = j.status === 'running' || j.status === 'queued';
-  const icon = j.status === 'running' ? ICON.spin : j.status === 'queued' ? ICON.wait : j.status === 'done' ? ICON.ok : ICON.bad;
+  const icon = j.status === 'running' ? ICON.spin : j.status === 'queued' || awaiting ? ICON.wait : j.status === 'done' ? ICON.ok : ICON.bad;
   const time = j.status === 'running' ? `<span data-since="${j.startedAt}">${since(j.startedAt)}</span>`
     : j.status === 'queued' ? 'queued' : j.endedAt && j.startedAt ? dur(j.endedAt - j.startedAt) : j.status;
-  return `<details class="tool" data-s="${esc(j.status)}" data-agent="${esc(j.agent)}" data-job="${esc(j.id)}" ${openJobs.has(j.id) ? 'open' : ''}>
+  return `<details class="tool" data-s="${esc(j.status)}" data-mode="${mode}" data-agent="${esc(j.agent)}" data-job="${esc(j.id)}" ${openJobs.has(j.id) || awaiting ? 'open' : ''}>
     <summary>
       <span class="tl-ico">${icon}</span>
       <span class="tl-main">
-        <span class="tl-title">${esc(j.title)}</span>
+        <span class="tl-title">${modeBadge(j)}${esc(j.title)}</span>
         <span class="tl-sub">${esc(agentLabel[j.agent] || j.agent)}${j.model ? ` · ${esc(j.model)}` : ''} · ${esc(short(j.folder).split(' / ').pop())}</span>
       </span>
       <span class="tl-time">${time}</span>${ICON.chev}
     </summary>
     <div class="tl-body">
-      <div class="tl-row"><b>Folder</b><span>${esc(short(j.folder))}</span></div>
+      <div class="tl-row"><b>Folder</b><span>${esc(mode === 'safe' ? short(j.folder) : j.folder)}</span></div>
+      ${mode !== 'safe' ? `<div class="tl-row"><b>Agent</b><span>${esc(mode === 'ops' ? 'Collector · allowlisted operation' : brainLabel(j))}</span></div><div class="tl-row"><b>Mode</b><span>${mode.toUpperCase()} · approval for this job only</span></div>` : ''}
       ${j.result ? `<div class="tl-sec"><b>${j.status === 'done' ? 'Result' : 'What happened'}</b><div class="md">${md(j.result)}</div></div>` : ''}
-      ${j.denied ? `<div class="tl-warn">Safe mode blocked: ${esc(j.denied.join(', '))}</div>` : ''}
-      <div class="tl-sec dim"><b>Ada's instructions</b><div class="md">${md(j.prompt || '')}</div></div>
-      ${live ? `<button class="tl-cancel" data-cancel="${esc(j.id)}" type="button">Cancel job</button>` : ''}
+      ${j.denied ? `<div class="tl-warn">${mode === 'safe' ? 'Safe mode' : 'Tool permissions'} blocked: ${esc(j.denied.join(', '))}</div>` : ''}
+      <div class="tl-sec dim"><b>${mode === 'ops' ? 'Exact operation' : "Ada's instructions"}</b>${jobInstructions(j)}</div>
+      ${approvalControls(j)}
+      ${mode !== 'safe' && j.status === 'running' ? `<button class="tl-cancel" data-kill="${esc(j.id)}" type="button" ${wsLive ? '' : 'disabled'}>Kill job</button>` : live ? `<button class="tl-cancel" data-cancel="${esc(j.id)}" type="button">Cancel job</button>` : ''}
     </div>
   </details>`;
 }
@@ -564,11 +639,11 @@ function renderChat() {
   const jobs = new Map((chat.jobs || []).map((j) => [j.id, j]));
   const busy = !!t.busy;
 
-  const key = JSON.stringify([t, pending, chat.jobs, brainPref, wsLive]);
+  const key = JSON.stringify([t, pending, chat.jobs, chat.fullModePinSet, brainPref, wsLive]);
   if (key === chatKey) return;
   chatKey = key;
 
-  $('#chat-sub').textContent = `${chat.memory ? 'memory loaded' : 'memory offline'} · safe mode`;
+  $('#chat-sub').textContent = `${chat.memory ? 'memory loaded' : 'memory offline'} · safe by default`;
   const chip = $('#brain-btn');
   chip.innerHTML = `<i data-agent="${esc(brainPref.agent)}"></i>${esc(brainLabel(brainPref))}<svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>`;
   const models = chat.brains?.[brainPref.agent] || [''];
@@ -581,7 +656,7 @@ function renderChat() {
     rows.push(`<li class="hero">
       <div class="hero-mark">${ADA_MARK}</div>
       <h3>Back again, Nefer.</h3>
-      <p>Talk to me about anything. When something needs doing in a project, I'll hand it to a Claude or Codex worker. Workers run in safe mode: they edit files in their own folder and nothing else.</p>
+      <p>Talk to me about anything. Project jobs use safe mode by default. OPS and FULL jobs wait for your approval and PIN, separately for every job.</p>
       <div class="suggest">
         <button type="button" data-suggest="What's going on across my projects right now?">What's going on across my projects?</button>
         <button type="button" data-suggest="Which of my projects have uncommitted changes, and what are they?">Which projects have uncommitted work?</button>
@@ -591,6 +666,9 @@ function renderChat() {
   } else if (t.total > t.messages.length) {
     rows.push(`<li class="msg sys">Showing the latest ${t.messages.length} of ${t.total} messages</li>`);
   }
+  const visibleJobIds = new Set(t.messages.flatMap((m) => m.jobs || []));
+  const olderPending = (chat.jobs || []).filter((j) => j.status === 'awaiting-approval' && !visibleJobIds.has(j.id));
+  if (olderPending.length) rows.push(`<li class="msg ada"><h3 class="sec">Awaiting your approval</h3><div class="tools">${olderPending.map(jobCard).join('')}</div></li>`);
   for (const m of t.messages) {
     if (m.role === 'user') rows.push(`<li class="msg me"><div class="bubble">${esc(m.text)}</div></li>`);
     else if (m.role === 'ada') {
@@ -605,6 +683,7 @@ function renderChat() {
   }
   if (busy) rows.push(`<li class="msg ada">${adaHead(null, t.brain)}<div class="thinking">Thinking</div></li>`);
   log.innerHTML = rows.join('');
+  syncJobActions();
 
   // Send turns into stop while Ada is thinking (until you type something to queue).
   const send = $('#chat-send');
@@ -643,8 +722,66 @@ async function sendChat(text, cid = rid()) {
 }
 
 function setSheet(id, open) {
+  if (id === '#approval-sheet' && !open) { $('#approval-pin').value = ''; approvalTarget = null; }
   $(id).hidden = !open;
   document.body.classList.toggle('sheet-open', !!document.querySelector('.sheet:not([hidden])'));
+}
+
+function syncJobActions() {
+  document.querySelectorAll('[data-approval-expires]').forEach((el) => {
+    const left = Number(el.dataset.approvalExpires) - Date.now();
+    el.textContent = left > 0 ? `Approval expires in ${dur(left)}.` : 'Approval expired. Ask Ada to propose the job again.';
+  });
+  document.querySelectorAll('[data-approve], [data-deny], [data-kill]').forEach((el) => {
+    const id = el.dataset.approve || el.dataset.deny || el.dataset.kill;
+    const j = currentJob(id);
+    const allowed = el.dataset.kill ? j?.status === 'running' && jobMode(j) !== 'safe' : approvalOpen(j) && (!el.dataset.approve || data?.chat?.fullModePinSet);
+    el.disabled = !wsLive || !allowed || pendingJobActions.has(id);
+  });
+  if (approvalTarget) {
+    const j = currentJob(approvalTarget.id);
+    const ready = wsLive && data?.chat?.fullModePinSet && approvalOpen(j) && j.approvalId === approvalTarget.approval;
+    $('#approval-submit').disabled = !ready;
+    if (!ready) {
+      $('#approval-pin').value = '';
+      $('#approval-error').textContent = !wsLive ? 'Laptop not connected. Reconnect before approving.' : 'This approval is no longer available. Close and review the current job card.';
+    }
+  }
+}
+
+function openApproval(j) {
+  if (!wsLive || !approvalOpen(j) || !data?.chat?.fullModePinSet) return;
+  approvalTarget = { id: j.id, approval: j.approvalId };
+  $('#approval-pin').value = '';
+  $('#approval-error').textContent = '';
+  $('#approval-title').textContent = `Approve ${jobMode(j).toUpperCase()} job`;
+  $('#approval-review').textContent = `${j.title}\nFolder: ${j.folder}\nAgent: ${jobMode(j) === 'ops' ? 'Collector' : brainLabel(j)}\n\n${jobMode(j) === 'ops' ? operationText(j) : j.prompt || ''}`;
+  setSheet('#approval-sheet', true);
+  syncJobActions();
+  $('#approval-pin').focus();
+}
+
+async function sendJobAction(button, cmd) {
+  pendingJobActions.add(cmd.job);
+  syncJobActions();
+  try { await sendCmd({ id: rid(), ...cmd }); button.textContent = 'Sent'; }
+  catch { button.textContent = 'Not sent — retry'; pendingJobActions.delete(cmd.job); syncJobActions(); }
+  // Commands are not retried automatically. The next attempt always needs a new tap.
+  setTimeout(() => { pendingJobActions.delete(cmd.job); syncJobActions(); }, 10000);
+}
+
+function jobActionClick(e) {
+  const approve = e.target.closest('[data-approve]');
+  if (approve) { openApproval(currentJob(approve.dataset.approve)); return true; }
+  const deny = e.target.closest('[data-deny]');
+  if (deny) {
+    const j = currentJob(deny.dataset.deny);
+    if (approvalOpen(j)) sendJobAction(deny, { type: 'deny', job: j.id, approval: j.approvalId });
+    return true;
+  }
+  const kill = e.target.closest('[data-kill]');
+  if (kill) { sendJobAction(kill, { type: 'kill', job: kill.dataset.kill }); return true; }
+  return false;
 }
 
 function saveBrain() { try { localStorage.setItem('ada-brain', JSON.stringify(brainPref)); } catch {} }
@@ -672,6 +809,24 @@ function bindChat() {
   $('#chat-menu').addEventListener('click', () => setSheet('#chat-sheet', true));
   $('#brain-btn').addEventListener('click', () => setSheet('#brain-sheet', true));
   document.querySelectorAll('.sheet').forEach((s) => s.addEventListener('click', (e) => { if (e.target === s || e.target.closest('[data-close]')) setSheet(`#${s.id}`, false); }));
+  $('#approval-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const target = approvalTarget;
+    const j = target && currentJob(target.id);
+    if (!j || !approvalOpen(j) || j.approvalId !== target.approval || !wsLive) { syncJobActions(); return; }
+    let pin = $('#approval-pin').value;
+    $('#approval-pin').value = '';
+    if (!pin) { $('#approval-error').textContent = 'Enter your approval PIN.'; return; }
+    $('#approval-submit').disabled = true;
+    try {
+      await sendCmd({ type: 'approve', id: rid(), job: target.id, approval: target.approval, pin });
+      setSheet('#approval-sheet', false);
+    } catch {
+      $('#approval-error').textContent = 'Approval was not sent. Re-enter the PIN to try again.';
+      syncJobActions();
+    } finally { pin = ''; }
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#approval-sheet').hidden) setSheet('#approval-sheet', false); });
   $('#chat-reset').addEventListener('click', () => {
     sendCmd({ type: 'reset', id: rid() }).catch(() => {});
     setSheet('#chat-sheet', false);
@@ -687,6 +842,7 @@ function bindChat() {
     saveBrain(); chatKey = ''; renderChat(); setSheet('#brain-sheet', false);
   });
   $('#chat-log').addEventListener('click', (e) => {
+    if (jobActionClick(e)) return;
     const sg = e.target.closest('[data-suggest]');
     if (sg) { input.value = sg.dataset.suggest; grow(); input.focus(); return; }
     const c = e.target.closest('[data-cancel]');
@@ -714,11 +870,11 @@ function dayLabel(t) {
 function taskCard(k) {
   const live = k.status === 'running' || k.status === 'queued';
   const icon = k.status === 'running' ? ICON.spin : k.status === 'queued' ? ICON.wait : k.status === 'done' ? ICON.ok : ICON.bad;
-  return `<details class="tool act-task" data-s="${esc(k.status)}" data-agent="${esc(k.agent || 'task')}" data-task="${esc(k.id)}" ${openTasks.has(k.id) || live ? 'open' : ''}>
+  return `<details class="tool act-task" data-s="${esc(k.status)}" data-mode="${jobMode(k)}" data-agent="${esc(k.agent || 'task')}" data-task="${esc(k.id)}" ${openTasks.has(k.id) || live ? 'open' : ''}>
     <summary>
       <span class="tl-ico">${icon}</span>
       <span class="tl-main">
-        <span class="tl-title">${esc(k.title)}</span>
+        <span class="tl-title">${modeBadge(k)}${esc(k.title)}</span>
         <span class="tl-sub">${esc(agentLabel[k.agent] || k.agent || 'Task')}${k.by === 'ada-chat' ? ' · from Ada chat' : ''}${k.cwd ? ` · ${esc(short(k.cwd).split(' / ').pop())}` : ''}</span>
       </span>
       <span class="tl-time">${live && k.startedAt ? `<span data-since="${k.startedAt}">${since(k.startedAt)}</span>` : `<span data-ago="${k.updatedAt}">${ago(k.updatedAt)}</span>`}</span>${ICON.chev}
@@ -727,12 +883,15 @@ function taskCard(k) {
       ${k.cwd ? `<div class="tl-row"><b>Folder</b><span>${esc(short(k.cwd))}</span></div>` : ''}
       ${k.preview ? `<div class="tl-sec"><div class="md">${md(k.preview)}</div></div>` : ''}
       ${k.outputs?.length ? `<div class="tl-row"><b>Outputs</b><span>${k.outputs.map((o) => esc(o.path.split(/[\\/]/).pop())).join(', ')}</span></div>` : ''}
+      ${jobMode(k) !== 'safe' && k.status === 'running' ? `<button class="tl-cancel" data-kill="${esc(k.id)}" type="button" ${wsLive ? '' : 'disabled'}>Kill job</button>` : ''}
     </div>
   </details>`;
 }
 
 function renderActivity() {
   const tasks = data.tasks || [];
+  const approvals = (data.chat?.jobs || []).filter((j) => j.status === 'awaiting-approval');
+  $('#act-approvals').innerHTML = approvals.length ? `<h2 class="sec">Awaiting approval <small>${approvals.length}</small></h2>${approvals.map(jobCard).join('')}` : '';
   const running = tasks.filter((k) => k.status === 'running' || k.status === 'queued');
   $('#act-running').innerHTML = running.length
     ? `<h2 class="sec">In progress <small>${running.length}</small></h2>${running.map(taskCard).join('')}` : '';
@@ -765,9 +924,11 @@ function renderActivity() {
     </li>`);
   }
   $('#act-list').innerHTML = rows.length ? rows.join('') : '<li class="empty">Nothing here yet.</li>';
+  syncJobActions();
 }
 
 function bindActivity() {
+  $('#view-activity').addEventListener('click', jobActionClick);
   $('#act-filter').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
     actFilter = b.dataset.f;
@@ -790,6 +951,7 @@ function show(view) {
 }
 
 function lock(msg = '') {
+  setSheet('#approval-sheet', false);
   clearTimeout(timer);
   disconnectRelay();
   password = null;

@@ -21,6 +21,7 @@ import { collectCodex } from './lib/codex.mjs';
 import { collectTasks } from './lib/tasks.mjs';
 import { WorkMap } from './lib/work.mjs';
 import { collectAccounts } from './lib/accounts.mjs';
+import { limits } from './lib/limits.mjs';
 import { normPath } from './lib/util.mjs';
 import { FeedPublisher } from './lib/feed.mjs';
 
@@ -45,7 +46,7 @@ let stats = null;
 let relay = null;
 let accounts = [];
 let hub = null;
-const refreshAccounts = () => collectAccounts().then((a) => { accounts = a; }).catch((e) => console.error('[accounts]', e));
+const refreshAccounts = () => collectAccounts().then((a) => { accounts = a; limits.fromAccounts(a); }).catch((e) => console.error('[accounts]', e));
 
 function presence(claude) {
   const live = claude.filter((s) => s.status !== 'idle');
@@ -103,6 +104,7 @@ function snapshot() {
     timeline: timeline(sessions, tasks),
     projects,
     accounts,
+    limits: limits.active(), // services at their usage limit: [{ service, limited, resetText, resetsAt, at }]
     chat: hub?.view() || null,
   };
 }

@@ -229,6 +229,14 @@ a.kind:active { opacity: 0.7; }
 .acct { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--k); border-radius: var(--radius); padding: 12px 14px; }
 .acct[data-svc='claude'] { --k: var(--claude); }
 .acct[data-svc='chatgpt'] { --k: var(--codex); }
+.acct[data-svc='higgsfield'] { --k: var(--amber); }
+.acct[data-svc='higgsfield'] .a-head { flex-wrap: wrap; }
+.acct[data-svc='higgsfield'] .a-head .pill { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.acct[data-svc='higgsfield'] .a-email, .acct[data-svc='higgsfield'] .a-err { overflow-wrap: anywhere; }
+.a-credits { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-top: 14px; }
+.a-credits strong { min-width: 0; overflow-wrap: anywhere; font: 600 32px var(--mono); color: var(--k); font-variant-numeric: tabular-nums; }
+.a-credits span { font: 12px var(--mono); color: var(--muted); }
+.a-credit-empty { font: 12px var(--mono); color: var(--muted); margin-top: 14px; }
 .a-head { display: flex; align-items: center; gap: 8px; }
 .a-name { font-weight: 700; font-size: 16px; }
 .a-head .pill.r { text-transform: uppercase; letter-spacing: 0.08em; font-size: 10px; color: var(--k); border-color: color-mix(in srgb, var(--k) 45%, transparent); }
@@ -319,6 +327,31 @@ a.kind:active { opacity: 0.7; }
 .tl-sec.dim .md { color: var(--muted); font-size: 12.5px; }
 .tl-warn { font: 11.5px var(--mono); color: var(--amber); }
 .tl-cancel { justify-self: start; border: 1px solid rgba(240, 164, 58, 0.5) !important; color: var(--amber) !important; background: none !important; border-radius: 999px; padding: 6px 14px; font: 12px var(--mono) !important; cursor: pointer; }
+.mode-badge { display: inline-block; vertical-align: middle; margin-right: 7px; border: 1px solid currentColor; border-radius: 5px; padding: 2px 4px; color: var(--amber); font: 600 10px var(--mono); letter-spacing: .08em; }
+.mode-badge[data-mode='full'] { color: #ff8798; }
+.tool[data-s='awaiting-approval'] { border-color: rgba(240, 164, 58, .55); }
+.tool[data-s='awaiting-approval'] .tl-title, .tool[data-s='awaiting-approval'] .tl-sub { white-space: normal; overflow-wrap: anywhere; }
+.tool[data-s='awaiting-approval'] .tl-time { max-width: 8em; white-space: normal; text-align: right; }
+.job-instructions { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 var(--mono); color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 9px; padding: 10px; }
+.approval-info { display: grid; gap: 10px; }
+.approval-info p { margin: 0; line-height: 1.5; }
+.job-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.tl-approve { justify-self: start; border: 1px solid var(--amber) !important; color: var(--bg) !important; background: var(--amber) !important; border-radius: 999px; padding: 8px 14px; font: 600 12px var(--mono) !important; cursor: pointer; }
+.tl-approve:disabled, .tl-cancel:disabled { opacity: .45; cursor: default; }
+.approval-card { max-height: calc(100dvh - 20px); overflow-y: auto; }
+.approval-label { font: 12px var(--mono); color: var(--muted); }
+#approval-pin { width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); font: 16px var(--mono); padding: 10px; }
+#approval-error { margin: 0; font-size: 12px; }
+#approval-submit { justify-self: stretch; border-radius: 12px; padding: 12px; }
+
+/* Usage-limit banner (home page) + badge on the account card */
+#limits { display: grid; gap: 8px; }
+#limits:not(:empty) { margin-bottom: 12px; }
+.limit-banner { display: flex; align-items: center; gap: 12px; background: var(--amber-soft); border: 1px solid rgba(240, 164, 58, 0.55); border-left: 4px solid var(--amber); border-radius: var(--radius); padding: 12px 14px; }
+.limit-banner b { display: block; font-size: 15px; }
+.limit-banner span:not(.lb-ico) { display: block; margin-top: 2px; font: 13px var(--mono); color: var(--amber); overflow-wrap: anywhere; }
+.lb-ico { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--amber); color: var(--bg); display: grid; place-items: center; font: 700 15px var(--mono); }
+.pill.limit { background: var(--amber); border-color: var(--amber); color: var(--bg); font: 700 10px var(--mono); letter-spacing: 0.08em; }
 
 /* Empty state */
 .hero { list-style: none; text-align: center; padding: 8vh 8px 0; display: grid; justify-items: center; gap: 10px; }
@@ -373,6 +406,7 @@ body.sheet-open { overflow: hidden; }
 
 /* ---------- activity (tasks + log) ---------- */
 #act-running .tool { margin-bottom: 8px; }
+#act-approvals .tool { margin-bottom: 8px; }
 .act-list { list-style: none; margin: 10px 0 0; padding: 0; }
 .act-day { font: 600 10.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); margin: 18px 0 8px; }
 .act-card { margin: 6px 0; }

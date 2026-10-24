@@ -1,4 +1,4 @@
-// Signed-in accounts and their plan limits (5-hour session + weekly).
+// Signed-in accounts, plan limits (5-hour session + weekly), and separate credit balances.
 // Claude: Anthropic's usage endpoint, called with Claude Code's own login (same numbers as /usage).
 // Codex:  the rate-limit snapshot Codex writes into its session logs (fresh as of its last run).
 // Tokens are only read here and sent to Anthropic; they never enter the snapshot.
@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { safeReaddir, safeStat } from './util.mjs';
+import { readHiggsfield } from './higgsfield.mjs';
 
 const HOME = os.homedir();
 const CLAUDE_EVERY = 2 * 60e3;
@@ -126,9 +127,35 @@ function codexAccount() {
   };
 }
 
+// The Higgsfield sign-in email is personal, so it lives in the local config
+// (~/.ada-viewer/config.json, "higgsfieldEmail"), not in this public repo.
+function higgsfieldEmail() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.ada-viewer', 'config.json'), 'utf8'));
+    return typeof cfg.higgsfieldEmail === 'string' ? cfg.higgsfieldEmail : null;
+  } catch { return null; }
+}
+
+async function higgsfieldAccount() {
+  const acct = {
+    service: 'higgsfield',
+    name: 'Higgsfield',
+    email: higgsfieldEmail(),
+    surfaces: ['higgsfield.ai · browser'],
+    shared: 'Credits are separate from ChatGPT and Claude.',
+  };
+  try {
+    const result = await readHiggsfield();
+    if (result.error) return { ...acct, error: result.error, asOf: result.asOf || 0 };
+    return { ...acct, plan: result.plan, credits: result.credits, asOf: result.asOf, live: true };
+  } catch (e) {
+    return { ...acct, error: `Higgsfield check failed (${e.message})` };
+  }
+}
+
 export async function collectAccounts() {
-  const [claude] = await Promise.all([claudeAccount()]);
+  const [claude, higgsfield] = await Promise.all([claudeAccount(), higgsfieldAccount()]);
   let codex;
   try { codex = codexAccount(); } catch (e) { codex = { service: 'chatgpt', name: 'ChatGPT', error: e.message }; }
-  return [claude, codex];
+  return [claude, codex, higgsfield];
 }
