@@ -166,3 +166,26 @@ test('head turn: a missing transcript or a throwing reader never breaks the turn
     assert.equal(h.hub.view().thread.messages.at(-1).text, 'hi');
   }
 });
+
+test('window store: learned windows persist to a file and reload; junk is ignored; codex borrows what was observed for its model', async () => {
+  const { useWindowStore } = await import('../collector/lib/context.mjs');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ada-win-')), 'sub', 'context-windows.json');
+  useWindowStore(file);
+  learnWindow('store-model-a', 400000);
+  learnWindow('store-model-a', 400000); // unchanged: no rewrite needed, still correct
+  learnWindow('', 5); learnWindow('store-bad', NaN);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8'))['store-model-a'], 400000);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8'))['store-bad'], undefined);
+  fs.writeFileSync(file, JSON.stringify({ 'store-model-b': 123000, 'store-model-c': 'x' }));
+  useWindowStore(file);
+  assert.equal(windowFor('store-model-b').window, 123000);
+  assert.equal(windowFor('store-model-c'), null);
+  // a rollout that reports a window teaches it; a later rollout of the same model without one gets a percentage
+  const ev = (info) => [{ type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 50000 }, ...info } } }];
+  assert.equal(codexContext(ev({ model_context_window: 200000 }), 'store-codex').pct, 25);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8'))['store-codex'], 200000);
+  const later = codexContext(ev({}), 'store-codex');
+  assert.deepEqual([later.window, later.pct], [200000, 25]);
+  assert.equal(codexContext(ev({}), 'store-never-seen').pct, null, 'never-observed model: no invented number');
+  useWindowStore(null);
+});

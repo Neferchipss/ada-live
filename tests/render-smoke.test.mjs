@@ -139,7 +139,9 @@ test('context bars, merged approvals line, folded attention and the expired/deni
   // chat header: 85% of 200k, amber/red threshold classes, fresh-context hint over 80%
   assert.equal(r.hidden.ctx, false);
   assert.match(r.html['chat-ctx'], /class="ctx hot"/);
-  assert.match(r.html['chat-ctx'], /85% · 170k/);
+  assert.match(r.html['chat-ctx'], /ctx 85% · 170k \/ 200k/);
+  assert.match(r.html['chat-ctx'], /class="ctx-bar"/, 'the bar sits inside the pill');
+  assert.match(r.html['chat-ctx'], /ch-model">m</, 'model name beside the chip');
   assert.match(r.html['chat-ctx'], /data-fresh/);
   // one amber line: working + to approve, opening the approvals sheet; collapsed by default (no rows)
   const strip = r.html['work-strip'];
@@ -147,8 +149,11 @@ test('context bars, merged approvals line, folded attention and the expired/deni
   assert.match(strip, /to approve/);
   assert.doesNotMatch(strip, /ws-rows|ws-row/);
   // activity: Now rows carry the bar (unknown window = tokens only), the project card shows its session
-  assert.match(r.html['act-now'], /84k/);
-  assert.match(r.html['act-now'], /10% · 20k/);
+  assert.match(r.html['act-now'], /ctx 84k</, 'unknown window: neutral token-only pill');
+  assert.doesNotMatch(r.html['act-now'], /ctx 84k[^<]*%/);
+  assert.match(r.html['act-now'], /ctx 10% · 20k \/ 200k/);
+  assert.match(r.html['act-now'], /now-src">proj · Ada job</, 'one muted line instead of stacked uppercase labels');
+  assert.doesNotMatch(r.html['act-now'], /ws-proj/);
   assert.match(r.html['act-projects'], /ap-ctx/);
   // work page: the live agent's context badge (assumed window gets "~", over 90% is red)
   assert.match(r.html['work'], /class="ctx crit"[^>]*>.*~95% · 190k/s);
@@ -165,6 +170,17 @@ test('context bars, merged approvals line, folded attention and the expired/deni
   // history: denied + expired under the muted group
   assert.match(r.html['act-hist-list'], /hist-h">Expired \/ denied/);
   assert.match(r.html['act-hist-list'], /class="lapsed"/);
+});
+
+test('collapsed strip names the most recent job with its timer and summarises the rest; approvals keep the amber countdown', async () => {
+  const s = realistic();
+  s.chat.jobs = s.chat.jobs.filter((j) => j.status !== 'awaiting-approval');
+  const r = await unlockWith(s);
+  assertUnlocked(r, 'strip');
+  assert.match(r.html['work-strip'], /ws-lead">Running full<\/span> · <span data-since="\d+">[^<]+<\/span> · \+1 in terminal/);
+  assert.doesNotMatch(r.html['work-strip'], /ws-rows/);
+  const a = await unlockWith(realistic());
+  assert.match(a.html['work-strip'], /1 to approve.*<span data-appr-left>/);
 });
 
 test('a job carrying a wrong-pin note renders the retry tag and the page still unlocks', async () => {

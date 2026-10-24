@@ -8,6 +8,8 @@
 // Window size is never invented. Order of trust: the CLI's own report (Codex model_context_window,
 // Claude JSON modelUsage[model].contextWindow, remembered per model below), then FAMILY_WINDOWS for older
 // Claude families whose default is documented, else null (the page shows the token count only).
+import fs from 'node:fs';
+import path from 'node:path';
 import { ctxPct } from '../../docs/context.mjs';
 
 // Documented default windows, matched on the model id. Deliberately short: a model that is not listed here
@@ -19,11 +21,26 @@ export const FAMILY_WINDOWS = [
 
 const learned = new Map(); // model id -> window the CLI reported for it (survives for the life of the collector, persisted by chat.mjs)
 
+let store = null; // file the learned map is persisted to (set by useWindowStore; null = memory only, as in tests)
+
 export function learnWindow(model, window) {
-  if (typeof model === 'string' && model && Number.isFinite(window) && window > 0) learned.set(model, Math.round(window));
+  if (typeof model !== 'string' || !model || !Number.isFinite(window) || window <= 0) return;
+  const w = Math.round(window);
+  if (learned.get(model) === w) return;
+  learned.set(model, w);
+  if (store) {
+    try { fs.mkdirSync(path.dirname(store), { recursive: true }); fs.writeFileSync(store, JSON.stringify(Object.fromEntries(learned), null, 2)); } catch {}
+  }
 }
 export const learnedWindows = () => Object.fromEntries(learned);
 export function loadWindows(obj) { for (const [m, w] of Object.entries(obj && typeof obj === 'object' ? obj : {})) learnWindow(m, w); }
+
+/** Persist what is learned to `file` (e.g. ~/.ada-viewer/context-windows.json) and load what it already holds. */
+export function useWindowStore(file) {
+  store = file || null;
+  if (!store) return;
+  try { loadWindows(JSON.parse(fs.readFileSync(store, 'utf8'))); } catch {}
+}
 
 /** { window, src } for a model id, or null when it is not known. */
 export function windowFor(model) {
@@ -94,5 +111,7 @@ export function codexUsage(entries) {
 export function codexContext(entries, model = '') {
   const u = codexUsage(entries);
   if (!u) return null;
-  return makeContext({ used: u.used, window: u.window, src: 'data', model });
+  if (u.window && model) learnWindow(model, u.window); // the rollout's own window: remember it for this model
+  const known = u.window ? null : windowFor(model); // a session without one borrows what was observed for its model
+  return makeContext({ used: u.used, window: u.window ?? known?.window, src: known?.src || 'data', model });
 }

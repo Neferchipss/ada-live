@@ -2,9 +2,9 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=pin-1';
-import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=pin-1';
-import { ctxView, ctxNeedsFresh } from './context.mjs?v=pin-1';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=ctx-1';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=ctx-1';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=ctx-1';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -972,11 +972,11 @@ function dur(ms) {
 }
 const since = (t) => dur(Date.now() - t);
 
-// Context usage: a 3px bar plus "42% · 84k". Unknown window size: the token count only, no bar, no percentage.
+// Context usage as a pill: "ctx 27% · 268k / 1M" with a 4px bar inside. Unknown window size: "ctx 258k", no bar, no percentage.
 function ctxBar(c) {
   const v = ctxView(c);
   if (!v) return '';
-  return `<span class="ctx${v.level ? ` ${v.level}` : ''}" title="${esc(v.title)}">${v.pct === null ? '' : `<i class="ctx-bar"><b style="width:${Math.min(100, Math.max(0, v.pct))}%"></b></i>`}<span class="ctx-t">${esc(v.label)}</span></span>`;
+  return `<span class="ctx${v.level ? ` ${v.level}` : ''}" title="${esc(v.title)}"><span class="ctx-t">${esc(v.chip)}</span>${v.pct === null ? '' : `<i class="ctx-bar"><b style="width:${Math.min(100, Math.max(0, v.pct))}%"></b></i>`}</span>`;
 }
 // The context a running worker or session reports, looked up in the active-work map by its id.
 function workerCtx(id) {
@@ -990,7 +990,7 @@ function renderCtx() {
   const c = data?.chat?.thread?.context;
   const v = c && c.agent === brainPref.agent ? ctxView(c) : null;
   el.hidden = !v;
-  el.innerHTML = v ? `${ctxBar(c)}${ctxNeedsFresh(v) ? ' <button type="button" class="link ctx-fresh" data-fresh>Fresh context</button>' : ''}` : '';
+  el.innerHTML = v ? `${c.model ? `<span class="ch-model">${esc(c.model)}</span>` : ''}${ctxBar(c)}${ctxNeedsFresh(v) ? ' <button type="button" class="link ctx-fresh" data-fresh>Fresh context</button>' : ''}` : '';
 }
 
 const jobMode = (j) => j.mode === 'full' || j.mode === 'ops' ? j.mode : 'safe';
@@ -1140,8 +1140,8 @@ function stripItems() {
   return items.sort((a, b) => a.project.localeCompare(b.project) || a.r - b.r);
 }
 
-// One line: "● 1 working · 1 to approve · 1:11 ›". Approvals are part of it (amber), so there is no separate bar.
-// With exactly one thing going on and nothing to approve it also names it, with its age.
+// One line that names the work: "● Screenshot live page… · 12s · +1 in terminal ›" (the most recent job and its timer, then a
+// short summary of the rest). Approvals are part of it (amber "1 to approve · 4:52"), so there is no separate bar.
 function stripSummary(items, jobs) {
   const now = Date.now();
   const awaiting = jobs.filter((j) => j.status === 'awaiting-approval');
@@ -1151,16 +1151,23 @@ function stripSummary(items, jobs) {
   const term = items.length - jobs.length;
   const working = jobs.length - awaiting.length - held;
   const soon = soonestExpiry(jobs, now);
-  const parts = [working ? `${working} working` : '', toApprove ? `${toApprove} to approve` : '', expired ? `${expired} expired` : '', held ? `${held} held` : '', term ? `${term} in terminal` : ''].filter(Boolean);
-  let tail = '';
-  if (items.length === 1 && !awaiting.length) {
-    const it = items[0];
-    const t0 = it.job ? (it.job.status === 'running' ? it.job.startedAt : it.job.createdAt) : it.w.since;
-    const t = Number.isFinite(t0) ? t0 : Date.now();
-    tail = ` · ${esc(it.job ? it.job.title : it.w.title || 'Session')} · <span data-since="${t}">${since(t)}</span>`;
-  }
   const time = toApprove && soon ? ` · <span data-appr-left>${countdown(soon - now)}</span>` : '';
-  return `<span class="ws-dot"></span><span class="ws-sum-t">${esc(parts.join(' · '))}${tail}${time}</span>`;
+  const startOf = (it) => { const t0 = it.job ? (it.job.status === 'running' ? it.job.startedAt : it.job.createdAt) : it.w.since; return Number.isFinite(t0) ? t0 : now; };
+  if (awaiting.length) {
+    const parts = [working ? `${working} working` : '', toApprove ? `${toApprove} to approve` : '', expired ? `${expired} expired` : '', held ? `${held} held` : '', term ? `${term} in terminal` : ''].filter(Boolean);
+    return `<span class="ws-dot"></span><span class="ws-sum-t">${esc(parts.join(' · '))}${time}</span>`;
+  }
+  // The lead is the most recent running Ada job, else the most recent item of any kind.
+  const cand = items.filter((i) => i.job && i.job.status !== 'queued').length ? items.filter((i) => i.job && i.job.status !== 'queued') : items;
+  const lead = cand.reduce((m, it) => (startOf(it) > startOf(m) ? it : m), cand[0]);
+  const rest = items.filter((i) => i !== lead);
+  const rj = rest.filter((i) => i.job), rt = rest.length - rj.length;
+  const rHeld = rj.filter((i) => i.job.status === 'queued' && i.job.holdReason).length;
+  const rWork = rj.length - rHeld;
+  const more = [rWork ? `${rWork} working` : '', rHeld ? `${rHeld} held` : '', rt ? `${rt} in terminal` : ''].filter(Boolean);
+  const t = startOf(lead);
+  const title = lead.job ? lead.job.title : lead.w.title || 'Session';
+  return `<span class="ws-dot"></span><span class="ws-sum-t"><span class="ws-lead">${esc(title)}</span> · <span data-since="${t}">${since(t)}</span>${more.length ? ` · +${esc(more.join(', '))}` : ''}</span>`;
 }
 
 function renderStrip() {
@@ -1240,7 +1247,7 @@ function renderApprovals() {
   const focused = act?.dataset?.approve ? 'approve' : act?.dataset?.deny ? 'deny' : null;
   const focusedId = focused && act.dataset[focused];
   $('#appr-list').innerHTML = pending.length ? pending.map(approvalItem).join('') : '<p class="appr-empty">Nothing waiting for approval.</p>';
-  $('#act-hist').hidden = !hist.ran.length && !hist.lapsed.length;
+  $('#act-hist').hidden = !hist.ran.length && !hist.lapsed.length; // no rows, no section
   const histRow = (j, cls = '') => {
     const t = j.endedAt || j.startedAt || j.createdAt;
     return `<li${cls ? ` class="${cls}"` : ''}><span>${modeBadge(j)}${esc(j.title)}</span><em>${esc(outcomeLabel(j))}</em><time data-ago="${t}">${ago(t)}</time></li>`;
@@ -1679,7 +1686,7 @@ function renderAttention(list) {
     ? `<button type="button" class="link attn-dis" data-show-dismissed>${showDismissed ? 'Hide' : 'Show'} dismissed (${v.dismissed.length})</button>${showDismissed ? `<div class="attn dim">${v.dismissed.map((a) => `<div class="attn-wrap">${attnRow(a, `<button type="button" class="attn-x attn-restore" data-restore="${esc(a.id)}">Restore</button>`)}</div>`).join('')}</div>` : ''}`
     : '';
   $('#act-attn').innerHTML = rows || dis
-    ? `<h2 class="sec">Needs attention <small>${v.count}</small>${v.failedIds.length > 1 ? '<button type="button" class="link attn-all" data-dismiss-all>Dismiss all</button>' : ''}</h2>${rows ? `<div class="attn">${rows}</div>` : ''}${dis}` : '';
+    ? `<h2 class="sec sec-row"><span>Needs attention <small>${v.count}</small></span>${v.failedIds.length > 1 ? '<button type="button" class="link attn-all" data-dismiss-all>Dismiss all</button>' : ''}</h2>${rows ? `<div class="attn">${rows}</div>` : ''}${dis}` : '';
 }
 
 // A short-lived message with an Undo button.
@@ -1706,12 +1713,12 @@ function renderNow(waiting) {
   const jobs = new Map((data.chat?.jobs || []).map((j) => [j.id, j]));
   const tasks = new Map((data.tasks || []).map((k) => [k.id, k]));
   if (!groups.length && !waiting) { $('#act-now').innerHTML = ''; return; }
-  const body = groups.map((g) => `<div class="ws-proj">${esc(g.project)}${g.subfolder ? ` › ${esc(g.subfolder)}` : ''}</div>${g.workers.map((w) => {
-    const label = `<span class="now-src">${esc(SRC_LABEL[w.source] || w.source)}</span>`;
+  const body = groups.map((g) => `<div class="now-grp">${g.workers.map((w) => {
+    const label = `<span class="now-src">${esc([g.project, g.subfolder].filter(Boolean).join(' › '))} · ${esc(SRC_LABEL[w.source] || w.source)}</span>`;
     if (w.source === 'ada-job' && jobs.has(w.id)) return `<div class="now-item">${label}${jobCard(jobs.get(w.id), ctxBar(w.context))}</div>`;
     if (w.source === 'task' && tasks.has(w.id)) return `<div class="now-item">${label}${taskCard(tasks.get(w.id), ctxBar(w.context))}</div>`;
-    return extRow({ w, sub: g.subfolder });
-  }).join('')}`).join('');
+    return `<div class="now-item">${label}${extRow({ w, sub: g.subfolder })}</div>`;
+  }).join('')}</div>`).join('');
   $('#act-now').innerHTML = `<h2 class="sec">Now <small>${groups.reduce((n, g) => n + g.workers.length, 0)}</small></h2>
     ${waiting ? `<button type="button" class="act-appr" data-act-appr>${waiting} waiting for approval <span>Review ›</span></button>` : ''}
     ${body}`;

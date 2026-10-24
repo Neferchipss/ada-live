@@ -16,6 +16,7 @@ import { Stats } from './lib/stats.mjs';
 import { RelayClient } from './lib/relay.mjs';
 import { deriveKey, seal, open } from './lib/crypto.mjs';
 import { ChatHub } from './lib/chat.mjs';
+import { useWindowStore } from './lib/context.mjs';
 import { collectClaude } from './lib/claude.mjs';
 import { collectCodex } from './lib/codex.mjs';
 import { collectTasks } from './lib/tasks.mjs';
@@ -40,6 +41,7 @@ const dumpAt = args.indexOf('--dump');
 const dumpFile = dumpAt >= 0 ? args[dumpAt + 1] : null;
 
 const cfg = loadConfig();
+useWindowStore(path.join(STATE_DIR, 'context-windows.json')); // model -> context window, learned from what the CLIs report
 const key = deriveKey(cfg.password, cfg.salt);
 const work = new WorkMap(cfg.workRoot);
 // feedRemote in config (e.g. https://github.com/<you>/ada-live.git) turns on publishing.

@@ -38,9 +38,11 @@ export function ctxView(c) {
   const pct = ctxPct(c.used, window);
   const approx = pct !== null && c.src === 'family';
   const tokens = fmtTokens(c.used);
+  const label = pct === null ? tokens : `${approx ? '~' : ''}${pct}% · ${tokens}`;
   return {
-    used: c.used, window, pct, level: ctxLevel(pct),
-    label: pct === null ? tokens : `${approx ? '~' : ''}${pct}% · ${tokens}`,
+    used: c.used, window, pct, level: ctxLevel(pct), label,
+    // The pill text: "ctx 27% · 268k / 1M", or "ctx 258k" when the window is unknown (never a made-up percentage).
+    chip: `ctx ${label}${window ? ` / ${fmtTokens(window)}` : ''}`,
     title: `${c.used.toLocaleString('en-US')} tokens in context${window ? ` of ${window.toLocaleString('en-US')}${approx ? ' (assumed window for this model family)' : ''}` : ' (window size unknown)'}`,
   };
 }
