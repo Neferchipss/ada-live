@@ -219,6 +219,7 @@ function render() {
   renderPC();
   renderFlow();
   renderChat();
+  renderStrip();
   renderActivity();
   renderWork();
   tickClock();
@@ -500,7 +501,7 @@ function tickClock() {
   document.querySelectorAll('[data-until]').forEach((el) => { el.textContent = until(Number(el.dataset.until)); });
   document.querySelectorAll('[data-since]').forEach((el) => { el.textContent = since(Number(el.dataset.since)); });
   syncJobActions();
-  if (data) renderLimits();
+  if (data) { renderLimits(); renderStrip(); }
   if (!data || paused) return;
   const age = Date.now() - (data.generatedAt || 0);
   if (!lastFetchOk) return;
@@ -619,6 +620,80 @@ function jobCard(j) {
       ${mode !== 'safe' && j.status === 'running' ? `<button class="tl-cancel" data-kill="${esc(j.id)}" type="button" ${wsLive ? '' : 'disabled'}>Kill job</button>` : live ? `<button class="tl-cancel" data-cancel="${esc(j.id)}" type="button">Cancel job</button>` : ''}
     </div>
   </details>`;
+}
+
+// Live strip of active workers, pinned under the chat header. Redrawn on every snapshot (render) and tick.
+// Approve/Deny/Kill use the same data attributes and handlers as the job cards (jobActionClick).
+const ACTIVE_JOB = ['awaiting-approval', 'running', 'queued', 'killing'];
+const STRIP_MAX = 5;
+let stripOpen = false;
+let stripKey = '';
+
+function stripStatus(j) {
+  if (j.status === 'awaiting-approval') return approvalOpen(j) ? 'waiting for your approval' : 'approval expired';
+  return j.status === 'killing' ? 'stopping' : j.status;
+}
+
+function stripRow(j) {
+  const mode = jobMode(j);
+  const icon = j.status === 'running' || j.status === 'killing' ? ICON.spin : ICON.wait;
+  const from = j.status === 'running' ? j.startedAt : j.createdAt;
+  const since0 = Number.isFinite(from) ? from : Date.now();
+  const kill = mode !== 'safe' && j.status === 'running' ? `<button class="tl-cancel" data-kill="${esc(j.id)}" type="button" ${wsLive ? '' : 'disabled'}>Kill job</button>` : '';
+  return `<div class="ws-row" role="button" tabindex="0" data-s="${esc(j.status)}" data-mode="${mode}" data-agent="${esc(j.agent)}" data-focus="${esc(j.id)}">
+    <div class="ws-line">
+      <span class="tl-ico">${icon}</span>
+      <span class="tl-main">
+        <span class="tl-title">${modeBadge(j)}${esc(j.title)}</span>
+        <span class="tl-sub">${esc(agentLabel[j.agent] || j.agent)} · ${esc(short(j.folder).split(' / ').pop())} · ${esc(stripStatus(j))}</span>
+      </span>
+      <span class="tl-time"><span data-since="${since0}">${since(since0)}</span></span>
+    </div>
+    ${kill}${approvalControls(j)}
+  </div>`;
+}
+
+function renderStrip() {
+  const el = $('#work-strip');
+  const rank = (j) => ACTIVE_JOB.indexOf(j.status);
+  const jobs = (data?.chat?.jobs || []).filter((j) => ACTIVE_JOB.includes(j.status)).sort((a, b) => rank(a) - rank(b));
+  const key = JSON.stringify([jobs, jobs.map(approvalOpen), wsLive, data?.chat?.fullModePinSet, stripOpen]);
+  if (key === stripKey) return;
+  stripKey = key;
+
+  const waiting = jobs.filter((j) => j.status === 'awaiting-approval').length;
+  const working = jobs.length - waiting;
+  const count = [working ? `${working} working` : '', waiting ? `${waiting} to approve` : ''].filter(Boolean).join(' · ');
+  $('#ch-count').textContent = count ? ` · ${count}` : '';
+  const badge = $('#tab-badge');
+  badge.hidden = !jobs.length;
+  badge.textContent = String(jobs.length);
+
+  el.hidden = !jobs.length;
+  if (!jobs.length) { el.innerHTML = ''; stripOpen = false; return; }
+  const shown = stripOpen ? jobs : jobs.slice(0, STRIP_MAX);
+  const more = jobs.length - STRIP_MAX;
+  el.innerHTML = shown.map(stripRow).join('')
+    + (more > 0 ? `<button class="ws-more" data-ws-more type="button">${stripOpen ? 'Show less' : `+${more} more`}</button>` : '');
+  syncJobActions();
+}
+
+// Scroll to a job's card in the chat and open it.
+function focusJobCard(id) {
+  const card = [...document.querySelectorAll('#chat-log details[data-job]')].find((d) => d.dataset.job === id);
+  if (!card) return;
+  card.open = true;
+  openJobs.add(id);
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.add('ws-flash');
+  setTimeout(() => card.classList.remove('ws-flash'), 1600);
+}
+
+function stripClick(e) {
+  if (jobActionClick(e)) return;
+  if (e.target.closest('[data-ws-more]')) { stripOpen = !stripOpen; renderStrip(); return; }
+  const row = e.target.closest('[data-focus]');
+  if (row) focusJobCard(row.dataset.focus);
 }
 
 function adaHead(t, b) {
@@ -840,6 +915,10 @@ function bindChat() {
     const b = e.target.closest('[data-model]'); if (!b) return;
     brainPref.model = b.dataset.model;
     saveBrain(); chatKey = ''; renderChat(); setSheet('#brain-sheet', false);
+  });
+  $('#work-strip').addEventListener('click', stripClick);
+  $('#work-strip').addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-focus]')) { e.preventDefault(); focusJobCard(e.target.dataset.focus); }
   });
   $('#chat-log').addEventListener('click', (e) => {
     if (jobActionClick(e)) return;

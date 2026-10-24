@@ -344,6 +344,25 @@ a.kind:active { opacity: 0.7; }
 #approval-error { margin: 0; font-size: 12px; }
 #approval-submit { justify-self: stretch; border-radius: 12px; padding: 12px; }
 
+/* Live worker strip, pinned in the chat header */
+.chat-head { flex-wrap: wrap; }
+.ch-title b small { font: 600 11px var(--mono); color: var(--amber); letter-spacing: 0; margin-left: 2px; }
+.tabs button { position: relative; }
+.tab-badge { position: absolute; top: 0; left: calc(50% + 6px); min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 999px; background: var(--amber); color: var(--bg); font: 700 10px/16px var(--mono); font-style: normal; text-align: center; }
+.tab-badge[hidden], .work-strip[hidden] { display: none; }
+.work-strip { flex: 1 0 100%; display: grid; gap: 6px; max-height: 42vh; overflow-y: auto; padding-bottom: 4px; }
+.ws-row { --k: var(--idle); display: grid; gap: 8px; border: 1px solid var(--line); border-left: 3px solid var(--k); border-radius: 14px; background: var(--bg-2); padding: 8px 12px; cursor: pointer; }
+.ws-row[data-agent='claude'] { --k: var(--claude); } .ws-row[data-agent='codex'] { --k: var(--codex); } .ws-row[data-agent='chatgpt'] { --k: var(--codex); }
+.ws-row[data-s='awaiting-approval'] { border-color: rgba(240, 164, 58, .55); border-left-color: var(--amber); }
+.ws-row[data-s='running'] { animation: ws-pulse 2.4s ease-in-out infinite; }
+.ws-row:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+.ws-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ws-row .tl-warn, .ws-row .approval-info { overflow-wrap: anywhere; }
+.ws-row .tl-cancel { justify-self: start; }
+.ws-more { justify-self: center; background: none !important; border: 1px solid var(--line) !important; border-radius: 999px; padding: 4px 14px; font: 12px var(--mono) !important; color: var(--muted) !important; cursor: pointer; }
+.tool.ws-flash { box-shadow: 0 0 0 2px var(--amber); transition: box-shadow .3s; }
+@keyframes ws-pulse { 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--k) 22%, transparent); } }
+
 /* Usage-limit banner (home page) + badge on the account card */
 #limits { display: grid; gap: 8px; }
 #limits:not(:empty) { margin-bottom: 12px; }
