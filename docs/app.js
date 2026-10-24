@@ -17,8 +17,10 @@ let lastEtag = '';
 let timer = null;
 let workFilter = 'active';
 let kindFilter = '';
+let unpushedFirst = false;
 const KIND = { pages: 'Live site', github: 'GitHub', git: 'Local git', local: 'Local' };
 const openProjects = new Set();
+const openGit = new Set();
 
 /* ---------------- crypto ---------------- */
 const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
@@ -445,11 +447,20 @@ function renderWork() {
   const q = $('#search').value.trim().toLowerCase();
   const now = Date.now();
   let list = (data.projects || []).slice();
-  if (workFilter === 'active') list = list.filter((p) => now - (p.lastActivity || 0) < 24 * 3600e3 || p.agents?.some((a) => a.status !== 'idle'));
-  if (workFilter === 'week') list = list.filter((p) => now - (p.lastActivity || 0) < 7 * 24 * 3600e3);
+  gitByPath = new Map((data.gitActivity || []).map((g) => [g.path, g]));
+  const unpushedN = (p) => gitByPath.get(p.path)?.ahead || 0;
+  // With the Unpushed chip on, projects holding unpushed commits stay visible whatever the time filter says.
+  const keep = (p) => unpushedFirst && unpushedN(p) > 0;
+  if (workFilter === 'active') list = list.filter((p) => keep(p) || now - (p.lastActivity || 0) < 24 * 3600e3 || p.agents?.some((a) => a.status !== 'idle'));
+  if (workFilter === 'week') list = list.filter((p) => keep(p) || now - (p.lastActivity || 0) < 7 * 24 * 3600e3);
   if (q) list = list.filter((p) => `${p.group || ''} ${p.name}`.toLowerCase().includes(q));
   if (kindFilter) list = list.filter((p) => p.kind === kindFilter);
-  list.sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
+  list.sort((a, b) => (unpushedFirst ? (unpushedN(b) > 0) - (unpushedN(a) > 0) : 0) || (b.lastActivity || 0) - (a.lastActivity || 0));
+  const totalUnpushed = (data.projects || []).filter((p) => unpushedN(p) > 0).length;
+  const chip = $('#unpushed-chip');
+  chip.textContent = totalUnpushed ? `Unpushed · ${totalUnpushed}` : 'Unpushed';
+  chip.classList.toggle('on', unpushedFirst);
+  chip.setAttribute('aria-pressed', String(unpushedFirst));
   $('#work-count').textContent = `${list.length} of ${(data.projects || []).length}`;
 
   if (!list.length) {
@@ -468,15 +479,42 @@ function renderWork() {
       <h3><span>${esc(g)}</span><span>${ps.length}</span></h3>
       ${ps.map(projectCard).join('')}
     </div>`).join('');
-  $('#work').querySelectorAll('details').forEach((d) => d.addEventListener('toggle', () => {
+  $('#work').querySelectorAll('details.proj').forEach((d) => d.addEventListener('toggle', () => {
     d.open ? openProjects.add(d.dataset.path) : openProjects.delete(d.dataset.path);
   }));
+  $('#work').querySelectorAll('details.gitx').forEach((d) => d.addEventListener('toggle', () => {
+    d.open ? openGit.add(d.dataset.path) : openGit.delete(d.dataset.path);
+  }));
+}
+
+let gitByPath = new Map();
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+// Collapsible Git section for a GitHub project: status, last push, commits, pushes. Every value is escaped.
+function gitSection(p, g) {
+  const onGithub = g.remoteBranch ? '' : ' · branch not on GitHub';
+  const status = [g.branch || 'detached HEAD', `${g.ahead} not pushed${onGithub}`, `${g.behind} behind`, `${g.dirty} uncommitted`].join(' · ');
+  const lastPush = g.lastPush
+    ? `Last push: <span data-ago="${g.lastPush}" data-full-ago>${agoFull(g.lastPush)}</span>`
+    : (g.reflog ? 'never pushed from this laptop' : 'No push history on this laptop (fresh clone or reflog expired)');
+  const commits = g.commits.length ? g.commits.map((c) => `<li class="gx-c"><code>${esc(c.h)}</code><span class="gx-s">${esc(c.s)}</span>${c.pushed ? '' : '<span class="gx-np">not pushed</span>'}<span class="gx-m">${esc(c.a)} · <span data-ago="${c.t}">${ago(c.t)}</span></span></li>`).join('') : '<li class="gx-none">No commits yet.</li>';
+  const pushes = g.pushes.length
+    ? g.pushes.map((e) => `<li class="gx-p" data-k="${esc(e.kind)}"><span class="gx-s">${e.kind === 'pushed' ? 'Pushed' : 'Fetched'}${e.n != null ? ' ' + plural(e.n, 'commit') : ''}${e.branch ? ' · ' + esc(e.branch) : ''}</span><code>${e.from ? esc(e.from) : 'new'} → ${esc(e.to)}</code><span class="gx-m" data-ago="${e.t}">${ago(e.t)}</span></li>`).join('')
+    : `<li class="gx-none">${g.reflog ? 'No pushes recorded.' : 'No reflog on this laptop, so no push history.'}</li>`;
+  return `<details class="gitx" data-path="${esc(p.path)}" ${openGit.has(p.path) ? 'open' : ''}>
+    <summary><b>Git</b><span class="gx-status${g.ahead ? ' warn' : ''}">${esc(status)}</span></summary>
+    <div class="gx-last">${lastPush}</div>
+    <div class="gx-h">Commits</div><ul class="gx-list">${commits}</ul>
+    <div class="gx-h">Pushes</div><ul class="gx-list">${pushes}</ul>
+    <a class="gx-open" href="${esc(g.url)}" target="_blank" rel="noopener">View on GitHub ↗</a>
+  </details>`;
 }
 
 function projectCard(p) {
   const live = p.agents?.some((a) => a.status !== 'idle');
   const agents = [...new Map((p.agents || []).map((a) => [a.agent + a.status, a])).values()];
   const git = p.git;
+  const gx = gitByPath.get(p.path);
   return `
     <details class="proj${live ? ' live' : ''}" style="--heat:${heat(p.lastActivity)}" data-path="${esc(p.path)}" ${openProjects.has(p.path) ? 'open' : ''}>
       <summary>
@@ -488,6 +526,7 @@ function projectCard(p) {
         <div class="pj-sub">
           <span class="kind" data-kind="${esc(p.kind || 'local')}">${KIND[p.kind] || 'Local'}${p.private === true ? ' · private' : p.private === false && p.kind !== 'pages' ? ' · public' : ''}</span>
           ${git ? `<span class="pill">⎇ ${esc(git.branch)}</span>${git.changed ? `<span class="pill r">${git.changed} changed</span>` : '<span class="pill">clean</span>'}` : ''}
+          ${gx?.ahead ? `<span class="pill r">${gx.ahead} not pushed</span>` : ''}
           ${live ? `<span class="pill r">agent working</span>` : ''}
           ${p.looseOnly ? '<span class="pill">loose files</span>' : ''}
         </div>
@@ -499,6 +538,7 @@ function projectCard(p) {
           ${p.repo ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">github.com/${esc(p.repo)} ↗</a>` : ''}
         </div>` : ''}
         ${git?.last ? `<div class="commit">${esc(git.last.hash)} · ${esc(git.last.subject)} · <span data-ago="${git.last.t}">${ago(git.last.t)}</span></div>` : ''}
+        ${gx ? gitSection(p, gx) : ''}
         ${p.recent?.length ? `<div>Recently changed</div><ul>${p.recent.map((r) => `<li><span>${esc(r.file)}</span><span data-ago="${r.t}">${ago(r.t)}</span></li>`).join('')}</ul>` : '<div>No files found.</div>'}
       </div>
     </details>`;
@@ -1627,6 +1667,7 @@ async function boot() {
     renderWork();
   });
   $('#search').addEventListener('input', () => renderWork());
+  $('#unpushed-chip').addEventListener('click', () => { unpushedFirst = !unpushedFirst; renderWork(); });
   bindChat();
   bindActivity();
   $('#kind-filter').addEventListener('click', (e) => {

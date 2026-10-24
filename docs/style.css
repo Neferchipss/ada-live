@@ -162,6 +162,24 @@ code, .mono { font-family: var(--mono); }
 .pj-body li span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cfc6cc; }
 .pj-body .commit { color: #cfc6cc; margin-bottom: 8px; }
 .pj-path { color: var(--dim); word-break: break-all; margin-bottom: 8px; }
+.gitx { margin: 0 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); padding: 8px 10px; }
+.gitx > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; min-height: 28px; }
+.gitx > summary::-webkit-details-marker { display: none; }
+.gitx > summary b { color: var(--text); font-weight: 600; }
+.gx-status { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.gx-status.warn { color: var(--amber); }
+.gx-last { margin: 8px 0 4px; color: #cfc6cc; }
+.gx-h { font: 600 10.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); margin: 10px 0 2px; }
+.pj-body .gx-list { margin: 0; }
+.pj-body .gx-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.pj-body .gx-list li:last-child { border-bottom: 0; }
+.gx-list code { color: var(--amber); font: 12px var(--mono); }
+.pj-body .gx-list .gx-s { flex: 1 1 140px; min-width: 0; white-space: normal; overflow-wrap: anywhere; color: #cfc6cc; }
+.gx-m { color: var(--dim); font-size: 11px; flex: 0 0 auto; }
+.gx-np { border: 1px solid var(--amber); color: var(--amber); border-radius: 999px; padding: 0 7px; font-size: 10px; line-height: 16px; flex: 0 0 auto; }
+.gx-p[data-k='fetched'] .gx-s { color: var(--dim); }
+.gx-none { color: var(--dim); }
+.gx-open { display: inline-block; margin-top: 10px; padding: 6px 0; color: var(--text); }
 
 /* ---------- log ---------- */
 .log { list-style: none; margin: 0; padding: 0 0 0 14px; border-left: 2px solid var(--line); }

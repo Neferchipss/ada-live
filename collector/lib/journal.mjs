@@ -143,9 +143,11 @@ function entryText(e) {
 }
 
 /** Pure digest for Ada's head turn: entries after `since`, grouped by project (newest first), within ~25 lines / ~3 KB. */
-export function buildDigest(entries, { since = 0, maxLines = 25, maxBytes = 3072 } = {}) {
+export function buildDigest(entries, { since = 0, maxLines = 25, maxBytes = 3072, unpushed = [] } = {}) {
   const fresh = entries.filter((e) => e.t > since).sort((a, b) => b.t - a.t);
-  if (!fresh.length) return '';
+  // One line per project holding commits that no origin ref has yet (kept even when nothing else changed).
+  const tail = unpushed.slice(0, 8).map((u) => `${clip(u.project, 60)}: ${u.ahead} commit${u.ahead === 1 ? '' : 's'} not pushed`);
+  if (!fresh.length) return tail.join('\n');
   const groups = new Map();
   for (const e of fresh) { if (!groups.has(e.project)) groups.set(e.project, []); groups.get(e.project).push(e); }
   const render = (lineCap, byteCap) => {
@@ -170,7 +172,7 @@ export function buildDigest(entries, { since = 0, maxLines = 25, maxBytes = 3072
     ({ out, shown } = render(maxLines - 1, maxBytes - 60));
     out.push(`(+${fresh.length - shown} older changes not shown)`);
   }
-  return out.join('\n');
+  return [...out, ...tail].join('\n');
 }
 
 export class Journal {
@@ -220,7 +222,7 @@ export class Journal {
   /** Newest first. */
   recent(n = 50) { return this.data.entries.slice(-n).reverse(); }
   since(t) { return this.data.entries.filter((e) => e.t > t); }
-  digest(since, opts) { return buildDigest(this.data.entries, { since, ...opts }); }
+  digest(since, opts) { return buildDigest(this.data.entries, { since, unpushed: this.unpushed?.() || [], ...opts }); }
 
   /** Head and branch the project had when last looked at (null the first time), so the git refresh can ask for what is new. */
   seen(projectPath) { return this.data.seen[normPath(projectPath)] || null; }

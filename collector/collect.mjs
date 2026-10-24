@@ -24,6 +24,7 @@ import { collectAccounts } from './lib/accounts.mjs';
 import { limits } from './lib/limits.mjs';
 import { normPath } from './lib/util.mjs';
 import { FeedPublisher } from './lib/feed.mjs';
+import { buildGitActivity, unpushedList } from './lib/gitactivity.mjs';
 import { Journal, activeMap, attribute, sessionActive } from './lib/journal.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -50,6 +51,7 @@ let hub = null;
 // Nefer's own terminals and delegated tasks, as last read. The chat's conflict guard and the git journal read this;
 // it is refreshed by every snapshot and re-read here when older than a few seconds.
 const journal = once ? null : new Journal();
+if (journal) journal.unpushed = () => unpushedList([...work.projects.values()]);
 let ext = { t: 0, sessions: [], tasks: [] };
 function externals() {
   if (Date.now() - ext.t > 8000) ext = { t: Date.now(), sessions: [...collectClaude(), ...collectCodex()], tasks: collectTasks() };
@@ -119,6 +121,8 @@ function snapshot() {
     // Who is working where, per project folder (terminal sessions, Ada jobs, tasks), and what recently changed in the projects.
     activeMap: activeMap({ projects, workRoot: cfg.workRoot, sessions: ext.sessions, jobs: hub?.state.jobs || [], tasks, own: hub?.ownSessions() || new Set() }),
     journal: journal?.recent(50) || [],
+    // Recent commits and pushes per GitHub project (bounded), from local git only.
+    gitActivity: buildGitActivity([...work.projects.values()]),
   };
 }
 

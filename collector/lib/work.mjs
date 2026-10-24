@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { safeReaddir, safeStat, normPath } from './util.mjs';
+import { GitActivityCache, parseGithubRemote } from './gitactivity.mjs';
 
 const run = promisify(execFile);
 
@@ -48,6 +49,7 @@ export class WorkMap {
     this.projects = new Map(); // normPath -> project
     this.watcher = null;
     this.dirtyGit = new Set();
+    this.activityCache = new GitActivityCache();
   }
 
   // Decide what counts as a project: a top-level folder that looks like one,
@@ -76,7 +78,7 @@ export class WorkMap {
     // keep scan results for projects that still exist
     for (const [k, v] of found) {
       const old = this.projects.get(k);
-      if (old) Object.assign(v, { lastModified: old.lastModified, recent: old.recent, git: old.git, remote: old.remote, github: old.github });
+      if (old) Object.assign(v, { lastModified: old.lastModified, recent: old.recent, git: old.git, remote: old.remote, github: old.github, activity: old.activity });
     }
     this.projects = found;
   }
@@ -174,6 +176,10 @@ export class WorkMap {
           changed: lines.length,
           last: hash ? { hash, subject, t: Date.parse(when) } : null,
         };
+        // Commits and pushes for GitHub projects: local git only, cached until HEAD or the refs move.
+        const ghRemote = parseGithubRemote(remote);
+        if (ghRemote) p.activity = await this.activityCache.get(opts.cwd, ghRemote, p.git.changed).catch(() => p.activity || null);
+        else p.activity = null;
         if (hook) {
           const { head: prev, branch: prevBranch } = hook.prev?.(p) || {};
           let commits = [];
