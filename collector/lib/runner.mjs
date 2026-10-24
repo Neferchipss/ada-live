@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { windowFromModelUsage } from './context.mjs';
 
 // Claude full mode can never push or deploy. These deny rules apply even with permissions bypassed.
 // Pattern matching is best-effort (it will not catch a push hidden inside a script).
@@ -81,7 +82,7 @@ export function codexArgs({ role, model, resume, cwd, lastMsg }) {
 
 /**
  * Starts a run. Returns { child, done } where done resolves to
- * { ok, text, session, code, error }.
+ * { ok, text, session, code, error } (Claude also: contextWindow/contextModel when the CLI reports them).
  */
 export function runAgent({ agent, role, model, cwd, prompt, resume: resumeId, system, addDirs, onSession }) {
   const lastMsg = path.join(os.tmpdir(), `ada-run-${crypto.randomBytes(4).toString('hex')}.txt`);
@@ -129,7 +130,9 @@ export function runAgent({ agent, role, model, cwd, prompt, resume: resumeId, sy
         try {
           const o = JSON.parse(out.trim().split('\n').pop());
           const denied = (o.permission_denials || []).map((d) => d.tool_name);
-          return resolve({ ok: !o.is_error && code === 0, text: o.result || '', session: o.session_id || session, code, denied, cost: o.total_cost_usd });
+          // modelUsage[model].contextWindow is the CLI's own window size; the transcript gives the current context (o.usage sums the whole turn).
+          const win = windowFromModelUsage(o.modelUsage);
+          return resolve({ ok: !o.is_error && code === 0, text: o.result || '', session: o.session_id || session, code, denied, cost: o.total_cost_usd, ...(win ? { contextWindow: win.window, contextModel: win.model } : {}) });
         } catch {
           return resolve({ ok: false, text: '', session, code, error: spawnErr?.message || tail.trim().split('\n').pop() || `exit ${code}` });
         }

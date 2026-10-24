@@ -31,6 +31,12 @@ export function recentResolved(jobs, now, n = RECENT_MAX) {
     .slice(0, n);
 }
 
+// Resolved jobs in two groups: ones that ran (done, failed, killed...) and ones that never did (expired, denied), each capped.
+export function resolvedGroups(jobs, now, n = RECENT_MAX) {
+  const all = recentResolved(jobs, now, Infinity);
+  return { ran: all.filter((j) => j.status !== 'expired' && j.status !== 'denied').slice(0, n), lapsed: all.filter((j) => j.status === 'expired' || j.status === 'denied').slice(0, n) };
+}
+
 const OUTCOME = { done: 'Approved · done', failed: 'Failed', denied: 'Denied', expired: 'Expired', cancelled: 'Cancelled', running: 'Approved · running', queued: 'Approved · queued', killing: 'Killing' };
 export function outcomeLabel(j) {
   if (j.status === 'failed' && /^killed/i.test(j.result || '')) return 'Killed';

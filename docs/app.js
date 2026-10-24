@@ -2,8 +2,9 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, recentResolved, outcomeLabel, countdown, newApprovals } from './approvals.mjs?v=safety-1';
-import { PROJECT_LIMIT, todayStats, needsAttention, waitingApprovals, nowGroups, byProject, projectOf, timelineRows } from './activity-model.mjs?v=safety-1';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals } from './approvals.mjs?v=ctx-1';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=ctx-1';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=ctx-1';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -434,7 +435,7 @@ function flowItems() {
     if ((k.status === 'done' || k.status === 'failed') && now - (k.endedAt || 0) > 6 * 3600e3) continue;
     items.push({
       agent: k.agent || 'task', status: k.status === 'running' || k.status === 'queued' ? 'working' : 'idle',
-      title: k.title, step: k.preview || k.status, cwd: k.cwd, t: k.updatedAt, images: k.outputs?.length || 0, task: true,
+      title: taskTitle(k), step: k.preview || k.status, cwd: k.cwd, t: k.updatedAt, images: k.outputs?.length || 0, task: true,
     });
   }
   const rank = { working: 0, blocked: 1, idle: 2 };
@@ -548,7 +549,7 @@ function projectCard(p) {
           <span class="kind" data-kind="${esc(p.kind || 'local')}">${KIND[p.kind] || 'Local'}${p.private === true ? ' · private' : p.private === false && p.kind !== 'pages' ? ' · public' : ''}</span>
           ${git ? `<span class="pill">⎇ ${esc(git.branch)}</span>${git.changed ? `<span class="pill r">${git.changed} changed</span>` : '<span class="pill">clean</span>'}` : ''}
           ${gx?.ahead ? `<span class="pill r">${gx.ahead} not pushed</span>` : ''}
-          ${live ? `<span class="pill r">agent working</span>` : ''}
+          ${live ? `<span class="pill r">agent working</span>${ctxBar(p.agents.find((a) => a.status !== 'idle' && a.context)?.context)}` : ''}
           ${p.looseOnly ? '<span class="pill">loose files</span>' : ''}
         </div>
       </summary>
@@ -970,6 +971,27 @@ function dur(ms) {
 }
 const since = (t) => dur(Date.now() - t);
 
+// Context usage: a 3px bar plus "42% · 84k". Unknown window size: the token count only, no bar, no percentage.
+function ctxBar(c) {
+  const v = ctxView(c);
+  if (!v) return '';
+  return `<span class="ctx${v.level ? ` ${v.level}` : ''}" title="${esc(v.title)}">${v.pct === null ? '' : `<i class="ctx-bar"><b style="width:${Math.min(100, Math.max(0, v.pct))}%"></b></i>`}<span class="ctx-t">${esc(v.label)}</span></span>`;
+}
+// The context a running worker or session reports, looked up in the active-work map by its id.
+function workerCtx(id) {
+  for (const g of data?.activeMap || []) for (const w of g.workers || []) if (w.id === id && w.context) return w.context;
+  return null;
+}
+
+// Under "Ada" in the chat header: how full her current session is. Only for the brain the chip shows.
+function renderCtx() {
+  const el = $('#chat-ctx');
+  const c = data?.chat?.thread?.context;
+  const v = c && c.agent === brainPref.agent ? ctxView(c) : null;
+  el.hidden = !v;
+  el.innerHTML = v ? `${ctxBar(c)}${ctxNeedsFresh(v) ? ' <button type="button" class="link ctx-fresh" data-fresh>Fresh context</button>' : ''}` : '';
+}
+
 const jobMode = (j) => j.mode === 'full' || j.mode === 'ops' ? j.mode : 'safe';
 const modeBadge = (j) => jobMode(j) === 'safe' ? '' : `<span class="mode-badge" data-mode="${jobMode(j)}">${jobMode(j).toUpperCase()}</span>`;
 const approvalOpen = (j) => j?.status === 'awaiting-approval' && Number.isFinite(j.approvalExpiresAt) && Date.now() < j.approvalExpiresAt;
@@ -1002,7 +1024,7 @@ function holdControls(j) {
 }
 
 // A worker job, drawn like an agent tool call: one line, tap to expand.
-function jobCard(j) {
+function jobCard(j, ctx = '') {
   if (!j) return '';
   const mode = jobMode(j), awaiting = j.status === 'awaiting-approval';
   const live = j.status === 'running' || j.status === 'queued';
@@ -1015,6 +1037,7 @@ function jobCard(j) {
       <span class="tl-main">
         <span class="tl-title">${modeBadge(j)}${esc(j.title)}</span>
         <span class="tl-sub">${esc(agentLabel[j.agent] || j.agent)}${j.model ? ` · ${esc(j.model)}` : ''} · ${esc(short(j.folder).split(' / ').pop())}</span>
+        ${ctx}
       </span>
       <span class="tl-time">${time}</span>${ICON.chev}
     </summary>
@@ -1065,6 +1088,7 @@ function stripRow(it) {
       <span class="tl-main">
         <span class="tl-title">${modeBadge(j)}${esc(j.title)}</span>
         <span class="tl-sub">${esc(subline(it.sub, stripStatus(j), agentTag(j.agent)))}</span>
+        ${it.ctx ? ctxBar(it.ctx) : ''}
       </span>
       <span class="tl-time"><span data-since="${since0}">${since(since0)}</span></span>
     </div>
@@ -1081,6 +1105,7 @@ function extRow({ w, sub }) {
       <span class="tl-main">
         <span class="tl-title">${esc(w.title || 'Session')}</span>
         <span class="tl-sub">${esc(subline(SRC_LABEL[w.source] || w.source, sub, label, agentTag(w.agent)))}</span>
+        ${ctxBar(w.context)}
       </span>
       <span class="tl-time"><span data-ago="${w.since}">${ago(w.since)}</span></span>
     </div>
@@ -1099,33 +1124,39 @@ function stripItems() {
   const items = [];
   for (const g of data?.activeMap || []) {
     for (const w of g.workers) {
-      if (w.source === 'ada-job') place.set(w.id, g);
+      if (w.source === 'ada-job') place.set(w.id, { g, w });
       else if (w.source === 'terminal' && isAdaWorker(w, all)) continue;
       else items.push({ ext: true, project: g.project, sub: g.subfolder, w, r: 9 });
     }
   }
   for (const j of jobs) {
-    const g = place.get(j.id);
-    items.push({ job: j, project: g?.project || short(j.folder).split(' / ').pop(), sub: g?.subfolder || '', r: rank(j) });
+    const { g, w } = place.get(j.id) || {};
+    items.push({ job: j, project: g?.project || short(j.folder).split(' / ').pop(), sub: g?.subfolder || '', r: rank(j), ...(w?.context ? { ctx: w.context } : {}) });
   }
   return items.sort((a, b) => a.project.localeCompare(b.project) || a.r - b.r);
 }
 
-// "● 2 working · 1 waiting ›", or with the title and age when there is exactly one thing going on.
+// One line: "● 1 working · 1 to approve · 1:11 ›". Approvals are part of it (amber), so there is no separate bar.
+// With exactly one thing going on and nothing to approve it also names it, with its age.
 function stripSummary(items, jobs) {
-  const waiting = jobs.filter((j) => j.status === 'awaiting-approval').length;
+  const now = Date.now();
+  const awaiting = jobs.filter((j) => j.status === 'awaiting-approval');
+  const toApprove = awaiting.filter(approvalOpen).length;
+  const expired = awaiting.length - toApprove;
   const held = jobs.filter((j) => j.status === 'queued' && j.holdReason).length;
   const term = items.length - jobs.length;
-  const working = jobs.length - waiting - held;
-  const parts = [working ? `${working} working` : '', waiting ? `${waiting} waiting` : '', held ? `${held} held` : '', term ? `${term} in terminal` : ''].filter(Boolean);
+  const working = jobs.length - awaiting.length - held;
+  const soon = soonestExpiry(jobs, now);
+  const parts = [working ? `${working} working` : '', toApprove ? `${toApprove} to approve` : '', expired ? `${expired} expired` : '', held ? `${held} held` : '', term ? `${term} in terminal` : ''].filter(Boolean);
   let tail = '';
-  if (items.length === 1) {
+  if (items.length === 1 && !awaiting.length) {
     const it = items[0];
     const t0 = it.job ? (it.job.status === 'running' ? it.job.startedAt : it.job.createdAt) : it.w.since;
     const t = Number.isFinite(t0) ? t0 : Date.now();
     tail = ` · ${esc(it.job ? it.job.title : it.w.title || 'Session')} · <span data-since="${t}">${since(t)}</span>`;
   }
-  return `<span class="ws-dot"></span><span class="ws-sum-t">${esc(parts.join(' · '))}${tail}</span><span class="ws-chev">›</span>`;
+  const time = toApprove && soon ? ` · <span data-appr-left>${countdown(soon - now)}</span>` : '';
+  return `<span class="ws-dot"></span><span class="ws-sum-t">${esc(parts.join(' · '))}${tail}${time}</span>`;
 }
 
 function renderStrip() {
@@ -1133,7 +1164,7 @@ function renderStrip() {
   const items = stripItems();
   const jobs = items.filter((i) => i.job).map((i) => i.job);
   const waiting = jobs.some((j) => j.status === 'awaiting-approval');
-  const open = waiting || stripPref;
+  const open = stripPref; // rows only on tap; a waiting approval does not grow the header (its line is amber and opens the approvals sheet)
   const key = JSON.stringify([items, jobs.map(approvalOpen), wsLive, data?.chat?.fullModePinSet, open]);
   if (key === stripKey) { renderApprovals(); return; }
   stripKey = key;
@@ -1152,13 +1183,14 @@ function renderStrip() {
     project = it.project;
     return head + stripRow(it);
   }).join('') : '';
-  el.innerHTML = `<button class="ws-sum" data-ws-toggle type="button" aria-expanded="${open}" data-s="${waiting ? 'awaiting-approval' : 'working'}">${stripSummary(items, jobs)}</button>${open ? `<div class="ws-rows">${rows}</div>` : ''}`;
+  const s0 = waiting ? 'awaiting-approval' : 'working';
+  el.innerHTML = `<div class="ws-head"><button class="ws-sum" ${waiting ? 'data-ws-appr aria-haspopup="dialog"' : 'data-ws-toggle'} type="button" data-s="${s0}">${stripSummary(items, jobs)}</button><button class="ws-exp" data-ws-toggle type="button" aria-expanded="${open}" aria-label="${open ? 'Hide' : 'Show'} workers" data-s="${s0}"><span class="ws-chev">›</span></button></div>${open ? `<div class="ws-rows">${rows}</div>` : ''}`;
   syncJobActions();
   renderApprovals();
 }
 
 /* ---------------- Approvals panel ---------------- */
-// A one-line bar under the strip; tapping it opens a sheet listing every job awaiting approval.
+// The strip's amber line opens a sheet listing every job awaiting approval.
 // Buttons are approvalControls(): the same data-approve/data-deny handlers and PIN dialog as the job cards.
 const BASE_TITLE = document.title;
 let seenApprovals = null; // null until the first snapshot, which only seeds
@@ -1184,7 +1216,7 @@ function renderApprovals() {
   const now = Date.now();
   const pending = pendingApprovals(jobs, now);
   const open = openApprovals(jobs, now);
-  const recent = recentResolved(jobs, now);
+  const hist = resolvedGroups(jobs, now);
 
   const found = newApprovals(jobs, seenApprovals, now);
   seenApprovals = found.seen;
@@ -1194,26 +1226,24 @@ function renderApprovals() {
   }
 
   document.title = open.length ? `(${open.length}) ${BASE_TITLE}` : BASE_TITLE;
-  const bar = $('#appr-bar');
-  bar.hidden = !pending.length; // history lives on the Activity page
   const soon = soonestExpiry(jobs, now);
-  bar.dataset.pending = open.length ? '1' : '0';
-  bar.innerHTML = open.length
-    ? `<span>Approvals · ${open.length} waiting</span>${soon ? `<span class="ab-time">${countdown(soon - now)}</span>` : ''}`
-    : '<span>Approvals · expired</span>';
+  document.querySelectorAll('[data-appr-left]').forEach((el) => { el.textContent = soon ? countdown(soon - now) : ''; });
 
-  const key = JSON.stringify([pending.map((j) => [j.id, approvalOpen(j)]), recent.map((j) => [j.id, j.status]), wsLive, data?.chat?.fullModePinSet]);
+  const key = JSON.stringify([pending.map((j) => [j.id, approvalOpen(j)]), hist.ran.map((j) => [j.id, j.status]), hist.lapsed.map((j) => j.id), wsLive, data?.chat?.fullModePinSet]);
   if (key === apprKey) return;
   apprKey = key;
   const act = document.activeElement;
   const focused = act?.dataset?.approve ? 'approve' : act?.dataset?.deny ? 'deny' : null;
   const focusedId = focused && act.dataset[focused];
   $('#appr-list').innerHTML = pending.length ? pending.map(approvalItem).join('') : '<p class="appr-empty">Nothing waiting for approval.</p>';
-  $('#act-hist').hidden = !recent.length;
-  $('#act-hist-list').innerHTML = recent.map((j) => {
+  $('#act-hist').hidden = !hist.ran.length && !hist.lapsed.length;
+  const histRow = (j, cls = '') => {
     const t = j.endedAt || j.startedAt || j.createdAt;
-    return `<li><span>${modeBadge(j)}${esc(j.title)}</span><em>${esc(outcomeLabel(j))}</em><time data-ago="${t}">${ago(t)}</time></li>`;
-  }).join('');
+    return `<li${cls ? ` class="${cls}"` : ''}><span>${modeBadge(j)}${esc(j.title)}</span><em>${esc(outcomeLabel(j))}</em><time data-ago="${t}">${ago(t)}</time></li>`;
+  };
+  // Approvals that never ran are not failures: they sit in their own muted group.
+  $('#act-hist-list').innerHTML = hist.ran.map((j) => histRow(j)).join('')
+    + (hist.lapsed.length ? `<li class="hist-h">Expired / denied</li>${hist.lapsed.map((j) => histRow(j, 'lapsed')).join('')}` : '');
   if (focused) [...document.querySelectorAll(`#appr-list [data-${focused}]`)].find((b) => b.dataset[focused] === focusedId)?.focus();
   syncJobActions();
 }
@@ -1244,6 +1274,7 @@ function stripClick(e) {
   if (jobActionClick(e)) return;
   const rv = e.target.closest('[data-review]');
   if (rv) { openApprovalsPanel(rv.dataset.review); return; }
+  if (e.target.closest('[data-ws-appr]')) { openApprovalsPanel(); return; }
   if (e.target.closest('[data-ws-toggle]')) { stripPref = !stripPref; try { localStorage.setItem('ada-strip', stripPref ? '1' : '0'); } catch {} renderStrip(); return; }
   const row = e.target.closest('[data-focus]');
   if (row) focusJobCard(row.dataset.focus);
@@ -1278,7 +1309,8 @@ function renderChat() {
   $('#brain-models').innerHTML = models.map((m) => `<button type="button" data-model="${esc(m)}" class="${m === brainPref.model ? 'on' : ''}">${m ? esc(m) : 'Default model'}</button>`).join('');
   document.querySelectorAll('#brain-seg button').forEach((b) => b.classList.toggle('on', b.dataset.brain === brainPref.agent));
 
-  const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
+  renderCtx();
+  const nearBottom = log.scrollHeight - log.scrollTop - (log.clientHeight || 0) < 160; // the log scrolls inside its own container
   const rows = [];
   if (!t.messages.length && !pending.length) {
     rows.push(`<li class="hero">
@@ -1324,7 +1356,7 @@ function renderChat() {
   watchUploadedGroup(t);
   observeLazy();
   $('#chat-reset').disabled = busy;
-  if (nearBottom || pending.length) requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight }));
+  if (nearBottom || pending.length) requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
 }
 
 async function sendCmd(cmd, upload = false) {
@@ -1455,6 +1487,7 @@ function bindChat() {
   });
   bindAttach();
   $('#chat-menu').addEventListener('click', () => setSheet('#chat-sheet', true));
+  $('#chat-ctx').addEventListener('click', (e) => { if (e.target.closest('[data-fresh]')) setSheet('#chat-sheet', true); });
   $('#brain-btn').addEventListener('click', () => setSheet('#brain-sheet', true));
   document.querySelectorAll('.sheet').forEach((s) => s.addEventListener('click', (e) => { if (e.target === s || e.target.closest('[data-close]')) setSheet(`#${s.id}`, false); }));
   $('#approval-form').addEventListener('submit', async (e) => {
@@ -1489,7 +1522,6 @@ function bindChat() {
     brainPref.model = b.dataset.model;
     saveBrain(); chatKey = ''; renderChat(); setSheet('#brain-sheet', false);
   });
-  $('#appr-bar').addEventListener('click', () => openApprovalsPanel());
   $('#approvals-sheet').addEventListener('click', jobActionClick);
   $('#work-strip').addEventListener('click', stripClick);
   $('#work-strip').addEventListener('keydown', (e) => {
@@ -1529,15 +1561,16 @@ function dayLabel(t) {
   return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
 }
 
-function taskCard(k) {
+function taskCard(k, ctx = '') {
   const live = k.status === 'running' || k.status === 'queued';
   const icon = k.status === 'running' ? ICON.spin : k.status === 'queued' ? ICON.wait : k.status === 'done' ? ICON.ok : ICON.bad;
   return `<details class="tool act-task" data-s="${esc(k.status)}" data-mode="${jobMode(k)}" data-agent="${esc(k.agent || 'task')}" data-task="${esc(k.id)}" ${openTasks.has(k.id) || live ? 'open' : ''}>
     <summary>
       <span class="tl-ico">${icon}</span>
       <span class="tl-main">
-        <span class="tl-title">${modeBadge(k)}${esc(k.title)}</span>
+        <span class="tl-title">${modeBadge(k)}${esc(taskTitle(k))}</span>
         <span class="tl-sub">${esc(agentLabel[k.agent] || k.agent || 'Task')}${k.by === 'ada-chat' ? ' · from Ada chat' : ''}${k.cwd ? ` · ${esc(short(k.cwd).split(' / ').pop())}` : ''}</span>
+        ${ctx}
       </span>
       <span class="tl-time">${live && k.startedAt ? `<span data-since="${k.startedAt}">${since(k.startedAt)}</span>` : `<span data-ago="${k.updatedAt}">${ago(k.updatedAt)}</span>`}</span>${ICON.chev}
     </summary>
@@ -1582,15 +1615,57 @@ function renderTiles(stats) {
   $('#act-tiles').innerHTML = TILES.map(([k, label]) => `<button type="button" class="tile${stats[k] ? ' on' : ''}" data-tile="${k}"><b>${fmt(stats[k])}</b><span>${label}</span></button>`).join('');
 }
 
-const ATTN_LABEL = { failed: 'Failed', held: 'Held', expired: 'Expired', unpushed: 'Unpushed', limit: 'Limit' };
+const ATTN_LABEL = { failed: 'Failed', held: 'Held', unpushed: 'Unpushed', limit: 'Limit' };
+
+// Failed items can be dismissed; the ids live on this device only.
+let dismissed = [];
+try { dismissed = parseDismissed(localStorage.getItem('ada-dismissed')); } catch {}
+const saveDismissed = () => { try { localStorage.setItem('ada-dismissed', JSON.stringify(dismissed)); } catch {} };
+let showDismissed = false, failedAll = false, unpushedAll = false, unpushedOpen = false;
+let attnFailedIds = []; // what "Dismiss all" will dismiss right now
+
+const attnInner = (a) => `<span class="attn-k">${ATTN_LABEL[a.kind]}</span><span class="attn-t">${esc(a.title)}</span><span class="attn-d">${esc(a.detail)}${a.t ? ` · <time data-ago="${a.t}">${ago(a.t)}</time>` : ''}</span>`;
+
+function attnRow(a, extra = '') {
+  if (a.kind === 'limit') return `<div class="attn-row" data-kind="limit">${attnInner(a)}</div>`;
+  return `<button type="button" class="attn-row" data-kind="${esc(a.kind)}" data-attn="${esc(a.kind)}" data-id="${esc(a.id)}">${attnInner(a)}</button>${extra}`;
+}
 
 function renderAttention(list) {
-  $('#act-attn').innerHTML = list.length
-    ? `<h2 class="sec">Needs attention <small>${list.length}</small></h2><div class="attn">${list.map((a) => {
-      const inner = `<span class="attn-k">${ATTN_LABEL[a.kind]}</span><span class="attn-t">${esc(a.title)}</span><span class="attn-d">${esc(a.detail)}${a.t ? ` · <time data-ago="${a.t}">${ago(a.t)}</time>` : ''}</span>`;
-      return a.kind === 'limit' ? `<div class="attn-row" data-kind="limit">${inner}</div>`
-        : `<button type="button" class="attn-row" data-kind="${esc(a.kind)}" data-attn="${esc(a.kind)}" data-id="${esc(a.id)}">${inner}</button>`;
-    }).join('')}</div>` : '';
+  const v = attentionView(list, { dismissed, failedAll, unpushedAll });
+  attnFailedIds = v.failedIds;
+  const u = v.unpushed;
+  const rows = [
+    ...v.failed.map((a) => `<div class="attn-wrap">${attnRow(a, `<button type="button" class="attn-x" data-dismiss="${esc(a.id)}" aria-label="Dismiss ${esc(a.title)}">×</button>`)}</div>`),
+    v.failedHidden ? `<button type="button" class="ws-more" data-attn-more>Show ${v.failedHidden} more</button>` : '',
+    ...v.others.map((a) => attnRow(a)),
+    u.projects ? `<button type="button" class="attn-row attn-fold" data-kind="unpushed" data-unpushed-toggle aria-expanded="${unpushedOpen}"><span class="attn-k">Unpushed</span><span class="attn-t">${u.projects} project${u.projects === 1 ? ' has' : 's have'} unpushed commits (total ${u.total})</span>${ICON.chev}</button>` : '',
+    u.projects && unpushedOpen ? `<div class="attn-sub">${u.items.map((a) => attnRow(a)).join('')}${u.hidden ? `<button type="button" class="ws-more" data-unpushed-all>Show all ${u.projects}</button>` : ''}</div>` : '',
+  ].join('');
+  const dis = v.dismissed.length
+    ? `<button type="button" class="link attn-dis" data-show-dismissed>${showDismissed ? 'Hide' : 'Show'} dismissed (${v.dismissed.length})</button>${showDismissed ? `<div class="attn dim">${v.dismissed.map((a) => `<div class="attn-wrap">${attnRow(a, `<button type="button" class="attn-x attn-restore" data-restore="${esc(a.id)}">Restore</button>`)}</div>`).join('')}</div>` : ''}`
+    : '';
+  $('#act-attn').innerHTML = rows || dis
+    ? `<h2 class="sec">Needs attention <small>${v.count}</small>${v.failedIds.length > 1 ? '<button type="button" class="link attn-all" data-dismiss-all>Dismiss all</button>' : ''}</h2>${rows ? `<div class="attn">${rows}</div>` : ''}${dis}` : '';
+}
+
+// A short-lived message with an Undo button.
+let toastTimer = null, toastUndo = null;
+function toast(msg, undo) {
+  const el = $('#toast');
+  toastUndo = undo || null;
+  el.innerHTML = `<span>${esc(msg)}</span>${undo ? '<button type="button" data-undo>Undo</button>' : ''}`;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; toastUndo = null; }, 6000);
+}
+
+function dismissIds(ids) {
+  if (!ids.length) return;
+  dismissed = addDismissed(dismissed, ids);
+  saveDismissed();
+  renderActivity();
+  toast(ids.length === 1 ? 'Dismissed' : `Dismissed ${ids.length}`, () => { dismissed = removeDismissed(dismissed, ids); saveDismissed(); renderActivity(); });
 }
 
 function renderNow(waiting) {
@@ -1600,8 +1675,8 @@ function renderNow(waiting) {
   if (!groups.length && !waiting) { $('#act-now').innerHTML = ''; return; }
   const body = groups.map((g) => `<div class="ws-proj">${esc(g.project)}${g.subfolder ? ` › ${esc(g.subfolder)}` : ''}</div>${g.workers.map((w) => {
     const label = `<span class="now-src">${esc(SRC_LABEL[w.source] || w.source)}</span>`;
-    if (w.source === 'ada-job' && jobs.has(w.id)) return `<div class="now-item">${label}${jobCard(jobs.get(w.id))}</div>`;
-    if (w.source === 'task' && tasks.has(w.id)) return `<div class="now-item">${label}${taskCard(tasks.get(w.id))}</div>`;
+    if (w.source === 'ada-job' && jobs.has(w.id)) return `<div class="now-item">${label}${jobCard(jobs.get(w.id), ctxBar(w.context))}</div>`;
+    if (w.source === 'task' && tasks.has(w.id)) return `<div class="now-item">${label}${taskCard(tasks.get(w.id), ctxBar(w.context))}</div>`;
     return extRow({ w, sub: g.subfolder });
   }).join('')}`).join('');
   $('#act-now').innerHTML = `<h2 class="sec">Now <small>${groups.reduce((n, g) => n + g.workers.length, 0)}</small></h2>
@@ -1611,7 +1686,7 @@ function renderNow(waiting) {
 
 // One compact line for a project history item.
 function itemLine(x) {
-  if (x.type === 'task') return { k: 'Task', text: `${x.task.title} — ${x.task.status}` };
+  if (x.type === 'task') return { k: 'Task', text: `${taskTitle(x.task)} — ${x.task.status}` };
   if (x.type === 'event') return { k: x.item.kind === 'prompt' ? 'You' : agentLabel[x.item.agent] || x.item.agent, text: x.item.text };
   return { k: x.change.by || 'Change', text: changeText(x.change) };
 }
@@ -1641,6 +1716,7 @@ function activityProjectCard(g) {
     <summary>
       <div class="ap-head"><span class="ap-name">${esc(g.name)}</span><time class="ago" data-ago="${g.last}">${ago(g.last)}</time>${ICON.chev}</div>
       ${chips ? `<div class="ap-chips">${chips}</div>` : ''}
+      ${g.ctx ? `<div class="ap-ctx"><span>${esc(agentLabel[g.ctx.agent] || g.ctx.agent)} session</span>${ctxBar(g.ctx.context)}</div>` : ''}
       ${prev ? `<div class="ap-prev">${prev}</div>` : ''}
     </summary>
     <div class="ap-body">${g.items.length ? historyHtml(g.items) : '<div class="empty">No recorded activity.</div>'}</div>
@@ -1668,7 +1744,7 @@ function renderTimeline() {
 
 function renderActivity() {
   const now = Date.now();
-  renderTiles(todayStats(data, now));
+  renderTiles(todayStats(data, now, dismissed));
   renderAttention(needsAttention(data, now));
   renderNow(waitingApprovals(data, now));
   renderProjects();
@@ -1701,7 +1777,7 @@ function tileClick(k) {
   else if (k === 'done') setTimeline('tasks', 'today');
   else if (k === 'failed') (attn.querySelector('[data-attn="failed"]') ? jump(attn) : setTimeline('tasks', 'today'));
   else if (k === 'sessions') setTimeline('agents', 'today');
-  else if (k === 'unpushed' && attn.querySelector('[data-attn="unpushed"]')) jump(attn.querySelector('[data-attn="unpushed"]'));
+  else if (k === 'unpushed' && attn.querySelector('[data-unpushed-toggle]')) { unpushedOpen = true; renderActivity(); jump(attn.querySelector('[data-unpushed-toggle]')); }
   else jump($('#act-projects'));
 }
 
@@ -1718,10 +1794,26 @@ function bindActivity() {
     if (jobActionClick(e)) return;
     const tile = e.target.closest('[data-tile]');
     if (tile) { tileClick(tile.dataset.tile); return; }
+    const x = e.target.closest('[data-dismiss]');
+    if (x) { dismissIds([x.dataset.dismiss]); return; }
+    if (e.target.closest('[data-dismiss-all]')) { dismissIds(attnFailedIds); return; }
+    const rs = e.target.closest('[data-restore]');
+    if (rs) { dismissed = removeDismissed(dismissed, [rs.dataset.restore]); saveDismissed(); renderActivity(); return; }
+    if (e.target.closest('[data-show-dismissed]')) { showDismissed = !showDismissed; renderActivity(); return; }
+    if (e.target.closest('[data-attn-more]')) { failedAll = true; renderActivity(); return; }
+    if (e.target.closest('[data-unpushed-toggle]')) { unpushedOpen = !unpushedOpen; renderActivity(); return; }
+    if (e.target.closest('[data-unpushed-all]')) { unpushedAll = true; renderActivity(); return; }
     const a = e.target.closest('[data-attn]');
     if (a) { attnClick(a.dataset.attn, a.dataset.id); return; }
     if (e.target.closest('[data-act-appr]')) { show('chat'); openApprovalsPanel(); return; }
     if (e.target.closest('[data-more]')) { projShown = Infinity; renderProjects(); }
+  });
+  $('#toast').addEventListener('click', (e) => {
+    if (!e.target.closest('[data-undo]')) return;
+    const undo = toastUndo;
+    toastUndo = null;
+    $('#toast').hidden = true;
+    undo?.();
   });
   $('#act-filter').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
@@ -1749,7 +1841,8 @@ function show(view) {
   document.querySelectorAll('.view').forEach((v) => { v.hidden = v.dataset.view !== view; });
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === view));
   document.body.classList.toggle('in-chat', view === 'chat');
-  window.scrollTo({ top: view === 'chat' ? document.body.scrollHeight : 0 });
+  window.scrollTo({ top: 0 });
+  if (view === 'chat') { const log = $('#chat-log'); log.scrollTop = log.scrollHeight; }
   try { sessionStorage.setItem('ada-tab', view); } catch {}
 }
 

@@ -83,7 +83,7 @@ test('needs attention: failed older than 24h is excluded, other kinds picked', (
   assert.ok(ids.includes('failed:k3') && ids.includes('failed:j4'));
   assert.ok(!ids.includes('failed:k2') && !ids.includes('failed:j5'));
   assert.ok(ids.includes('held:j1'));
-  assert.ok(ids.includes('expired:j2'));
+  assert.ok(!ids.some((i) => i.startsWith('expired:')), 'expired approvals are not attention rows; they live in the approval history');
   assert.ok(!ids.some((i) => i.endsWith(':j3')), 'an approval still open is not an attention row');
   assert.ok(ids.includes('unpushed:C:\\Work\\babajee') && !ids.includes('unpushed:C:\\Work\\other'));
   assert.deepEqual(ids.filter((i) => i.startsWith('limit:')), ['limit:claude']); // chatgpt's reset has passed

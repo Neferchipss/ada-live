@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { parseJsonLines, clip, ms, safeReaddir, safeStat } from './util.mjs';
+import { codexContext } from './context.mjs';
 
 const HOME = path.join(os.homedir(), '.codex');
 const RECENT_MS = 48 * 3600e3;
@@ -112,28 +113,42 @@ function parse(file, names) {
   else if (open) { s.status = 'blocked'; s.statusNote = 'task open but silent'; }
   else { s.status = 'idle'; s.statusNote = 'done'; }
   s.step = [...s.steps].reverse().find((x) => x.kind === 'tool')?.text || '';
+  const context = codexContext(entries, s.model);
+  if (context) s.context = context;
   s.steps = s.steps.slice(-25);
   s.images = images(s.id).slice(0, 6);
   if (!s.title) s.title = path.basename(s.cwd || '') || 'Codex session';
   return s;
 }
 
-export function collectCodex() {
-  const names = threadNames();
-  const now = Date.now();
+// Rollouts of the last `days` days (newest day first), as file paths.
+function recentRollouts(now, days = 3) {
   const files = [];
-  // Only walk the day folders that can hold recent sessions.
-  for (let d = 0; d < 3; d++) {
+  for (let d = 0; d < days; d++) {
     const day = new Date(now - d * 86400e3);
     const dir = path.join(HOME, 'sessions', String(day.getFullYear()),
       String(day.getMonth() + 1).padStart(2, '0'), String(day.getDate()).padStart(2, '0'));
     for (const f of safeReaddir(dir)) {
-      if (!f.isFile() || !/^rollout-.*\.jsonl(\.zst)?$/.test(f.name)) continue;
-      const p = path.join(dir, f.name);
-      const st = safeStat(p);
-      if (st && now - st.mtimeMs < RECENT_MS) files.push(p);
+      if (f.isFile() && /^rollout-.*\.jsonl(\.zst)?$/.test(f.name)) files.push(path.join(dir, f.name));
     }
   }
+  return files;
+}
+
+/** Context usage of one Codex session by id (Ada's own head turns), or null when its rollout is not found. */
+export function codexSessionContext(id) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(id || ''))) return null;
+  const file = recentRollouts(Date.now(), 90).find((p) => path.basename(p).includes(id));
+  if (!file) return null;
+  const entries = parseJsonLines(readRollout(file).split('\n'));
+  return codexContext(entries, entries.find((e) => e.type === 'turn_context' && e.payload?.model)?.payload.model || '');
+}
+
+export function collectCodex() {
+  const names = threadNames();
+  const now = Date.now();
+  // Only walk the day folders that can hold recent sessions.
+  const files = recentRollouts(now).filter((p) => { const st = safeStat(p); return st && now - st.mtimeMs < RECENT_MS; });
   const sessions = [];
   for (const f of files) {
     // Rollouts untouched for 15+ minutes won't change state; reuse the parse (zstd is costly).

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { tailLines, parseJsonLines, clip, ms, safeReaddir } from './util.mjs';
+import { claudeContext } from './context.mjs';
 
 const ROOT = path.join(os.homedir(), '.claude', 'projects');
 
@@ -130,8 +131,21 @@ function parseSession(file) {
   }
 
   s.steps = s.steps.slice(-25);
+  const context = claudeContext(entries, s.model);
+  if (context) s.context = context;
   if (!s.title) s.title = s.lastPrompt || path.basename(s.cwd || '') || 'Claude session';
   return s;
+}
+
+/** Context usage of one session by id (Ada's own head turns), or null when its transcript is not found. */
+export function claudeSessionContext(id) {
+  if (!/^[\w-]{8,64}$/.test(String(id || ''))) return null;
+  for (const d of safeReaddir(ROOT)) {
+    if (!d.isDirectory()) continue;
+    const file = path.join(ROOT, d.name, `${id}.jsonl`);
+    if (fs.existsSync(file)) return claudeContext(parseJsonLines(tailLines(file)));
+  }
+  return null;
 }
 
 export function collectClaude() {

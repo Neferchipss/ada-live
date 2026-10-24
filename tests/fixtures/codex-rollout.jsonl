@@ -1,0 +1,5 @@
+{"timestamp":"2026-06-15T10:00:00Z","type":"session_meta","payload":{"id":"01a16abf-01b1-7941-aeec-d040bd8a54a7","cwd":"C:\\Work\\demo"}}
+{"timestamp":"2026-06-15T10:00:01Z","type":"turn_context","payload":{"model":"gpt-5-codex"}}
+{"timestamp":"2026-06-15T10:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":50000,"cached_input_tokens":40000,"output_tokens":300,"total_tokens":50300},"last_token_usage":{"input_tokens":50000,"cached_input_tokens":40000,"output_tokens":300,"total_tokens":50300},"model_context_window":258400}}}
+{"timestamp":"2026-06-15T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":912417,"cached_input_tokens":775168,"output_tokens":3465,"total_tokens":915882},"last_token_usage":{"input_tokens":90230,"cached_input_tokens":89600,"output_tokens":634,"total_tokens":90864},"model_context_window":258400}}}
+{"timestamp":"2026-06-15T10:01:01Z","type":"event_msg","payload":{"type":"token_count","info":null}}

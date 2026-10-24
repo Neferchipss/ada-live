@@ -16,6 +16,9 @@ import { clip } from './util.mjs';
 import { MediaStore, checkAttachPath, cacheKey, validKey, formatSize, transcribe, MAX_ATTACH_PER_REPLY, CHUNK } from './media.mjs';
 import { UploadManager, UPLOAD } from './uploads.mjs';
 import { activeMap, findConflict, liveLine } from './journal.mjs';
+import { claudeSessionContext } from './claude.mjs';
+import { codexSessionContext } from './codex.mjs';
+import { learnWindow, learnedWindows, loadWindows, makeContext } from './context.mjs';
 
 const THREAD = 'ada';
 const MAX_WORKERS = 2;
@@ -72,6 +75,8 @@ export class ChatHub {
     this.killProcessTree = services.killProcessTree || killProcessTree;
     this.appendTaskEvent = services.appendTaskEvent || appendTaskEvent;
     this.limits = services.limits || sharedLimits;
+    // (agent, session id) -> { used, window, model, src } | null: how full that conversation's context is, read from its transcript.
+    this.sessionContext = services.sessionContext || ((agent, id) => (agent === 'codex' ? codexSessionContext(id) : claudeSessionContext(id)));
     // Who else is working: () => { sessions, tasks } (external Claude/Codex sessions and delegated tasks), and the change journal.
     this.external = services.external || (() => ({ sessions: [], tasks: [] }));
     this.journal = services.journal || null;
@@ -91,12 +96,14 @@ export class ChatHub {
     this.state = { thread: null, jobs: [], projectSessions: {}, seen: [] };
     try { Object.assign(this.state, JSON.parse(fs.readFileSync(this.file, 'utf8'))); } catch {}
     this.state.uploadsDone ||= [];
+    loadWindows(this.state.windows); // context-window sizes the CLI reported earlier, so terminal sessions of those models can show a percentage
     this.uploads = services.uploads || new UploadManager({ dir: this.inbox, now: this.now, recent: this.state.uploadsDone, onGroup: (g) => this.#uploadGroup(g) });
     this.uploads.init();
     const sweeper = setInterval(() => this.uploads.sweep(), 30e3);
     sweeper.unref?.();
     this.state.thread ||= { id: THREAD, brain: { agent: 'claude', model: '' }, heads: {}, lastAgent: null, messages: [], pending: [], busy: false };
     const t = this.state.thread;
+    t.context ||= {}; // per brain: { agent, model, used, window, at } after the last head turn
     // Anything mid-flight when the collector stopped is gone now.
     for (const j of this.state.jobs) if (['running', 'queued', 'killing', 'awaiting-approval'].includes(j.status)) {
       j.mode = normalizeMode(j.mode);
@@ -181,6 +188,7 @@ export class ChatHub {
     const t = this.t;
     if (t.busy) return 'busy';
     t.heads = {};
+    t.context = {};
     t.lastAgent = null;
     this.#post({ role: 'system', text: 'Fresh context. Ada starts a new session from here; her memory files still load.', reset: true });
     this.#changed();
@@ -427,7 +435,8 @@ ${list}`;
       const stopped = run.child.stopped;
       this.procs.delete('head');
       if (r.session) { t.heads[agent] = r.session; this.#remember(r.session); }
-      else if (resume && !r.ok) delete t.heads[agent]; // stale session: start fresh next time
+      else if (resume && !r.ok) { delete t.heads[agent]; delete t.context[agent]; } // stale session: start fresh next time
+      if (r.ok && !stopped) this.#noteContext(agent, model, r);
       if (!stopped) this.limits.note(agent, r);
       if (stopped) this.#post({ role: 'system', text: 'Stopped.' });
       else if (!r.ok) this.#post({ role: 'system', text: `Ada couldn't answer: ${clip(r.error || r.text || 'unknown error', 300)}` });
@@ -437,6 +446,18 @@ ${list}`;
       // More arrived while she was thinking.
       if (t.messages.some((m) => m.role === 'user' && !m.answered && !m.hold) || t.pending.length) this.#headTurn();
     });
+  }
+
+  // After a head turn: how full Ada's context is now. Read from the session transcript (the last request's input);
+  // the window comes from the CLI's own report when it gave one. A missing transcript just leaves the old value.
+  #noteContext(agent, model, r) {
+    try {
+      if (r.contextWindow && r.contextModel) { learnWindow(r.contextModel, r.contextWindow); this.state.windows = learnedWindows(); }
+      let c = r.session ? this.sessionContext(agent, r.session) : null;
+      if (!c) return;
+      if (agent === 'claude' && r.contextWindow) c = makeContext({ used: c.used, window: r.contextWindow, src: 'data', model: c.model || r.contextModel || model });
+      this.t.context[agent] = { agent, model: c.model || model || '', used: c.used, window: c.window ?? null, ...(c.src ? { src: c.src } : {}), at: this.now() };
+    } catch { /* the bar is a convenience: never fail a turn over it */ }
   }
 
   #reply(raw, lastUser, brain) {
@@ -820,7 +841,7 @@ ${j.prompt}`;
         return { ...j, mode, prompt: mode === 'safe' ? clip(prompt, 600) : String(prompt || '').slice(0, 12000), result: clip(j.result || '', 2000) };
       });
     return {
-      thread: { id: t.id, brain: t.brain, busy: t.busy, updatedAt: t.updatedAt, messages, total: t.messages.length },
+      thread: { id: t.id, brain: t.brain, busy: t.busy, updatedAt: t.updatedAt, messages, total: t.messages.length, context: t.context?.[t.brain.agent] || null },
       jobs,
       brains: { claude: ['', 'opus', 'sonnet', 'haiku'], codex: ['', ...codexModels()] },
       memory: fs.existsSync(path.join(GHOST_PRIVATE, 'memory.md')),

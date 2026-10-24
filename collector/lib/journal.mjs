@@ -80,6 +80,8 @@ export function isAdaSession(s, { own = new Set(), jobs = [] } = {}) {
  */
 export function activeMap({ projects = [], workRoot = '', sessions = [], jobs = [], tasks = [], own = new Set(), now = Date.now() } = {}) {
   const groups = new Map();
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const ctx = (s) => (s?.context ? { context: s.context } : {});
   const add = (cwd, w) => {
     const loc = locate(projects, workRoot, cwd);
     if (!loc) return;
@@ -93,15 +95,16 @@ export function activeMap({ projects = [], workRoot = '', sessions = [], jobs = 
     add(j.folder, {
       source: 'ada-job', id: j.id, agent: j.agent, mode: j.mode || 'safe', title: clip(j.title, 80),
       since: j.startedAt || j.createdAt || now, status: j.status, ...(j.holdReason ? { hold: j.holdReason } : {}),
+      ...ctx(j.session && j.status === 'running' ? byId.get(j.session) : null), // a running worker's own transcript
     });
   }
   for (const s of sessions) {
     if (!s.cwd || isAdaSession(s, { own, jobs }) || !sessionActive(s, now)) continue;
-    add(s.cwd, { source: 'terminal', id: s.id, agent: s.agent, mode: '', title: clip(s.title, 80), since: s.lastActivity || now, status: s.status });
+    add(s.cwd, { source: 'terminal', id: s.id, agent: s.agent, mode: '', title: clip(s.title, 80), since: s.lastActivity || now, status: s.status, ...ctx(s) });
   }
   for (const k of tasks) {
     if (!k.cwd || !taskActive(k, now)) continue;
-    add(k.cwd, { source: 'task', id: k.id, agent: k.agent || 'task', mode: k.mode || '', title: clip(k.title, 80), since: k.startedAt || k.createdAt || now, status: k.status });
+    add(k.cwd, { source: 'task', id: k.id, agent: k.agent || 'task', mode: k.mode || '', title: clip(k.title, 80), since: k.startedAt || k.createdAt || now, status: k.status, ...ctx(k.session ? byId.get(k.session) : null) });
   }
   return [...groups.values()].sort((a, b) => a.project.localeCompare(b.project) || a.subfolder.localeCompare(b.subfolder));
 }

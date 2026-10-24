@@ -102,7 +102,7 @@ function snapshot() {
     p.agents = sessions
       .filter((s) => s.cwd && (normPath(s.cwd) === n || normPath(s.cwd).startsWith(n + path.sep)))
       .filter((s) => !p.looseOnly || normPath(s.cwd) === n)
-      .map((s) => ({ agent: s.agent, id: s.id, status: s.status, lastActivity: s.lastActivity }));
+      .map((s) => ({ agent: s.agent, id: s.id, status: s.status, lastActivity: s.lastActivity, ...(s.context ? { context: s.context } : {}) }));
     p.lastActivity = Math.max(p.lastModified || 0, ...p.agents.map((a) => a.lastActivity));
   }
 
