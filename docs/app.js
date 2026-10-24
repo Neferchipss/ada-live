@@ -2,9 +2,9 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=ctx-1';
-import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=ctx-1';
-import { ctxView, ctxNeedsFresh } from './context.mjs?v=ctx-1';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=sv-1';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-1';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-1';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -688,6 +688,7 @@ function endMedia(m, state, err = '') {
 async function onMediaChunk(env) {
   let o;
   try { o = await decrypt(env); } catch { return; }
+  if (o.sv) { onSvChunk(o); return; } // a session-viewer reply, not attachment bytes
   const m = media.get(mKey(o.id, o.part === 'poster' ? 'poster' : 'main'));
   if (!m || m.state !== 'loading') return;
   if (o.err) return endMedia(m, 'error', String(o.err));
@@ -1086,7 +1087,7 @@ function stripRow(it) {
   const review = j.status === 'awaiting-approval' ? `<button class="ws-review" data-review="${esc(j.id)}" type="button">Review</button>` : '';
   const retry = needsPinRetry(j, Date.now()) ? `<button class="appr-retry" data-approve="${esc(j.id)}" type="button">${RETRY_TAG}</button>` : '';
   const kill = mode !== 'safe' && j.status === 'running' ? `<button class="tl-cancel" data-kill="${esc(j.id)}" type="button" ${wsLive ? '' : 'disabled'}>Kill job</button>` : '';
-  return `<div class="ws-row" role="button" tabindex="0" data-s="${esc(j.status)}"${held ? ' data-held="1"' : ''} data-mode="${mode}" data-agent="${esc(j.agent)}" data-focus="${esc(j.id)}">
+  return `<div class="ws-row" role="button" tabindex="0" data-s="${esc(j.status)}"${held ? ' data-held="1"' : ''} data-mode="${mode}" data-agent="${esc(j.agent)}" data-focus="${esc(j.id)}"${svOpenAttr(j.agent, j.session)}>
     <div class="ws-line">
       <span class="tl-ico">${icon}</span>
       <span class="tl-main">
@@ -1103,7 +1104,7 @@ function stripRow(it) {
 // Someone else's work (a terminal session or a delegated task): read-only, Ada can't kill or approve it.
 function extRow({ w, sub }) {
   const label = w.status === 'blocked' ? 'waiting on you' : 'working';
-  return `<div class="ws-row ws-ext" data-s="${esc(w.status)}" data-agent="${esc(w.agent)}">
+  return `<div class="ws-row ws-ext" data-s="${esc(w.status)}" data-agent="${esc(w.agent)}"${svOpenAttr(w.agent, w.id)}>
     <div class="ws-line">
       <span class="tl-ico">${w.status === 'blocked' ? ICON.wait : ICON.spin}</span>
       <span class="tl-main">
@@ -1287,6 +1288,8 @@ function stripClick(e) {
   if (rv) { openApprovalsPanel(rv.dataset.review); return; }
   if (e.target.closest('[data-ws-appr]')) { openApprovalsPanel(); return; }
   if (e.target.closest('[data-ws-toggle]')) { stripPref = !stripPref; try { localStorage.setItem('ada-strip', stripPref ? '1' : '0'); } catch {} renderStrip(); return; }
+  const so = e.target.closest('[data-sv-open]');
+  if (so) { const [a, id] = so.dataset.svOpen.split('|'); selectSession(a, id); return; }
   const row = e.target.closest('[data-focus]');
   if (row) focusJobCard(row.dataset.focus);
 }
@@ -1304,6 +1307,8 @@ function renderChat() {
     log.innerHTML = '<li class="empty">Chat is off — the laptop collector needs a restart with the new version.</li>';
     return;
   }
+  svChrome();
+  if (svSel) { renderSv(); return; }
   const t = chat.thread;
   const pending = [...outbox.entries()].filter(([cid]) => !t.messages.some((m) => m.cid === cid));
   const jobs = new Map((chat.jobs || []).map((j) => [j.id, j]));
@@ -1565,7 +1570,8 @@ function bindChat() {
   $('#approvals-sheet').addEventListener('click', jobActionClick);
   $('#work-strip').addEventListener('click', stripClick);
   $('#work-strip').addEventListener('keydown', (e) => {
-    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-focus]')) { e.preventDefault(); focusJobCard(e.target.dataset.focus); }
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-sv-open]')) { e.preventDefault(); const [a, id] = e.target.dataset.svOpen.split('|'); selectSession(a, id); }
+    else if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-focus]')) { e.preventDefault(); focusJobCard(e.target.dataset.focus); }
   });
   $('#chat-log').addEventListener('click', (e) => {
     if (jobActionClick(e)) return;
@@ -1577,14 +1583,255 @@ function bindChat() {
     if (sg) { input.value = sg.dataset.suggest; grow(); input.focus(); return; }
     const c = e.target.closest('[data-cancel]');
     if (c) { c.disabled = true; c.textContent = 'Cancelling…'; sendCmd({ type: 'cancel', id: rid(), job: c.dataset.cancel }).catch(() => {}); return; }
+    const st = e.target.closest('[data-sv-tool]');
+    if (st) { const id = Number(st.dataset.svTool); if (svOpenTools.has(id)) svOpenTools.delete(id); else svOpenTools.add(id); svKeyDone = ''; renderSv(); return; }
+    if (e.target.closest('[data-sv-retry]')) { svRetry(); return; }
     const r = e.target.closest('[data-retry]');
     if (r) { const o = outbox.get(r.dataset.retry); if (o) { outbox.delete(r.dataset.retry); sendChat(o.text); } }
+  });
+  $('#sv-bar').addEventListener('click', (e) => {
+    if (e.target.closest('[data-sv-ada]')) { backToAda(); return; }
+    const c = e.target.closest('[data-sv]');
+    if (c) { const [a, id] = c.dataset.sv.split('|'); selectSession(a, id); }
+  });
+  $('#sv-banner').addEventListener('click', (e) => {
+    if (e.target.closest('[data-sv-back]')) backToAda();
+    else if (e.target.closest('[data-sv-retry]')) svRetry();
+  });
+  $('#sv-actions').addEventListener('click', (e) => {
+    if (e.target.closest('[data-sv-ask]')) askAboutSession();
+    else if (e.target.closest('[data-sv-back]')) backToAda();
   });
   // Remember which job cards are expanded across re-renders.
   $('#chat-log').addEventListener('toggle', (e) => {
     const d = e.target; if (!d.dataset?.job) return;
     if (d.open) openJobs.add(d.dataset.job); else openJobs.delete(d.dataset.job);
   }, true);
+}
+
+/* ---------------- session viewer: read-only look into a worker's or a terminal session's conversation ---------------- */
+// The laptop answers each sealed 'session-view' request with sealed chunks on the media channel (see onMediaChunk).
+// The page only ever names an agent and a session id from the list the snapshot carries; there is no way to send into a session.
+const SV_POLL = 3000, SV_SLOW = 10000, SV_QUIET = 5 * 60e3, SV_STOP = 30 * 60e3, SV_KEEP = 400;
+const SV_SRC = { job: 'Job', terminal: 'Terminal' };
+let svSel = null;                 // { agent, session } while a conversation is open; null = Ada
+let svTok = 0;                    // bumps on every selection so late answers for a closed view are ignored
+let sv = svFresh();
+let svKeyDone = '';
+let svChromeKey = '';
+const svOpenTools = new Set();    // tool entries (by i) whose result is expanded
+const svPending = new Map();      // request id -> { chunks, n, res, rej, timer }
+
+function svFresh() {
+  return { state: 'loading', entries: [], next: -1, err: '', warn: '', status: '', ctx: null, lastNew: Date.now(), busy: false, timer: null, stopped: false, shown: false, title: '', source: '' };
+}
+const svList = () => (Array.isArray(data?.chat?.sessions) ? data.chat.sessions : []);
+const svId = (s) => `${s.agent}|${s.session}`;
+const svLive = (st) => st === 'working' || st === 'blocked';
+const svMeta = () => svList().find((s) => svSel && s.agent === svSel.agent && s.session === svSel.session) || null;
+const svTitle = (s) => String(s?.title || s?.project || 'Session').replace(/\s+/g, ' ').trim();
+function svOpenAttr(agent, session) {
+  if ((agent !== 'claude' && agent !== 'codex') || typeof session !== 'string' || !/^[\w-]{8,64}$/.test(session)) return '';
+  return ` role="button" tabindex="0" data-sv-open="${esc(agent)}|${esc(session)}"`;
+}
+
+function svChip(s) {
+  const v = ctxView(s.context);
+  const label = svTitle(s);
+  const on = svSel && svSel.agent === s.agent && svSel.session === s.session;
+  const where = s.project ? ` · ${s.project}${s.subfolder ? ` › ${s.subfolder}` : ''}` : '';
+  const pct = v && v.pct !== null ? `<span class="sv-pct${v.level ? ` ${v.level}` : ''}">${v.pct}%</span>` : '';
+  return `<button type="button" class="sv-chip${on ? ' on' : ''}" data-sv="${esc(svId(s))}" data-s="${esc(s.status)}" data-agent="${esc(s.agent)}" title="${esc(label + where)}"><i class="sv-dot"></i><span class="sv-t">${esc(label.length > 24 ? `${label.slice(0, 23)}…` : label)}</span><span class="sv-tag">${esc(SV_SRC[s.source] || s.source || '')}</span>${pct}</button>`;
+}
+
+// The row of chips under the chat header: Ada first, then active sessions, then a muted "Recent" group.
+function renderSwitcher() {
+  const el = $('#sv-bar');
+  let list = svList();
+  if (svSel && !list.some((s) => s.agent === svSel.agent && s.session === svSel.session)) {
+    list = [...list, { agent: svSel.agent, session: svSel.session, title: sv.title || 'Session', source: sv.source || 'terminal', status: sv.status || 'idle' }];
+  }
+  const key = JSON.stringify([list, svSel]);
+  if (key === el.dataset.k) return;
+  el.dataset.k = key;
+  el.hidden = !list.length;
+  const act = list.filter((s) => svLive(s.status)), rest = list.filter((s) => !svLive(s.status));
+  el.innerHTML = `<button type="button" class="sv-chip sv-ada${svSel ? '' : ' on'}" data-sv-ada><span class="sv-t">Ada</span></button>${act.map(svChip).join('')}${rest.length ? `<span class="sv-sep">Recent</span>${rest.map(svChip).join('')}` : ''}`;
+}
+
+// Banner, switcher and the composer/actions swap. Cheap enough to run on every chat render.
+function svChrome() {
+  renderSwitcher();
+  const on = !!svSel;
+  $('#composer').hidden = on;
+  $('#sv-actions').hidden = !on;
+  const b = $('#sv-banner');
+  b.hidden = !on;
+  if (!on) { svChromeKey = ''; return; }
+  const m = svMeta();
+  const status = sv.status || m?.status || '';
+  const live = svLive(status);
+  const title = m ? svTitle(m) : sv.title || 'Session';
+  const html = `<div class="sv-b1"><span class="sv-dot${live ? ' live' : ''}"></span><span class="sv-bt">Viewing <b>${esc(title)}</b> · ${esc(SV_SRC[m?.source || sv.source] || 'Session')} · read-only</span><button type="button" class="link sv-back" data-sv-back>Back to Ada</button></div>`
+    + `<div class="sv-b2"><span>${esc(agentLabel[svSel.agent] || svSel.agent)} · ${live ? 'live' : esc(status || 'quiet')}${sv.stopped ? ' · paused (quiet)' : ''}${sv.warn ? ` · ${esc(sv.warn)}` : ''}</span>${ctxBar(sv.ctx || m?.context)}${sv.stopped || sv.warn ? '<button type="button" class="link" data-sv-retry>Refresh</button>' : ''}</div>`;
+  if (html !== svChromeKey) { svChromeKey = html; b.innerHTML = html; }
+}
+
+function svToolRow(e, r) {
+  const id = (e || r).i;
+  const open = svOpenTools.has(id);
+  const body = open ? `<pre class="sv-res">${esc(r ? r.text || '(empty)' : 'no output yet')}</pre>` : '';
+  return `<li class="sv-tool${open ? ' open' : ''}${r?.error ? ' err' : ''}"><button type="button" class="sv-tl" data-sv-tool="${id}" aria-expanded="${open}"><span class="sv-tn">${esc(e?.tool || 'result')}</span><span class="sv-tx">${esc(e?.text || '')}</span><span class="sv-ch">›</span></button>${body}</li>`;
+}
+
+function svRows() {
+  const rows = [];
+  const es = sv.entries;
+  for (let k = 0; k < es.length; k++) {
+    const e = es[k];
+    if (e.kind === 'text' && e.role === 'user') rows.push(`<li class="msg me sv-u"><div class="bubble">${esc(e.text)}</div></li>`);
+    else if (e.kind === 'text') {
+      rows.push(`<li class="msg ada sv-a" data-agent="${esc(svSel.agent)}"><div class="sv-who"><b>${esc(agentLabel[svSel.agent] || svSel.agent)}</b>${e.t ? `<time data-ago="${e.t}">${ago(e.t)}</time>` : ''}</div><div class="md">${md(e.text)}</div></li>`);
+    } else if (e.kind === 'tool') rows.push(svToolRow(e, es[k + 1]?.kind === 'result' ? es[++k] : null));
+    else rows.push(svToolRow(null, e));
+  }
+  return rows;
+}
+
+function renderSv() {
+  const log = $('#chat-log');
+  const key = JSON.stringify([svSel, sv.state, sv.err, sv.entries.length, sv.entries.at(-1)?.i, [...svOpenTools]]);
+  if (key === svKeyDone) return;
+  svKeyDone = key;
+  const nearBottom = log.scrollHeight - log.scrollTop - (log.clientHeight || 0) < 160;
+  let html;
+  if (sv.state === 'error') html = `<li class="msg sys sv-state err">Couldn’t load this conversation: ${esc(sv.err || 'unknown error')}<br><button type="button" class="link" data-sv-retry>Try again</button></li>`;
+  else if (sv.state === 'loading') html = '<li class="msg sys sv-state">Loading conversation…</li>';
+  else if (!sv.entries.length) html = '<li class="msg sys sv-state">Nothing in this conversation yet.</li>';
+  else html = svRows().join('');
+  log.innerHTML = html;
+  const first = !sv.shown && sv.state === 'ready';
+  if (first) sv.shown = true;
+  if (nearBottom || first) requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
+}
+
+function onSvChunk(o) {
+  const p = svPending.get(o.sv);
+  if (!p || !Number.isInteger(o.i) || !Number.isInteger(o.n) || o.n < 1 || o.n > 64) return;
+  p.chunks.set(o.i, String(o.d));
+  p.n = o.n;
+  if (p.chunks.size < p.n) return;
+  clearTimeout(p.timer);
+  svPending.delete(o.sv);
+  try { p.res(JSON.parse([...Array(p.n).keys()].map((i) => p.chunks.get(i)).join(''))); } catch { p.rej(new Error('unreadable reply')); }
+}
+
+function svRequest(agent, session, after) {
+  return new Promise((res, rej) => {
+    const id = rid();
+    const timer = setTimeout(() => { svPending.delete(id); rej(new Error('no answer from the laptop')); }, 15000);
+    svPending.set(id, { chunks: new Map(), n: 0, res, rej, timer });
+    sendCmd({ type: 'session-view', id, agent, session, ...(Number.isInteger(after) && after >= 0 ? { after } : {}) })
+      .catch((e) => { clearTimeout(timer); svPending.delete(id); rej(e); });
+  });
+}
+
+async function svPoll() {
+  if (!svSel || sv.busy) return;
+  const me = sv;
+  me.busy = true;
+  clearTimeout(me.timer);
+  if (data?.chat?.media && !data.chat.media.relay) {
+    me.state = 'error'; me.err = 'needs the relay update to carry sessions'; me.busy = false;
+    svRefresh(); svSchedule();
+    return;
+  }
+  try {
+    const res = await svRequest(svSel.agent, svSel.session, me.next);
+    if (me !== sv) return;
+    if (!res.ok) {
+      if (res.err !== 'slow down') { if (me.entries.length) me.warn = res.err; else { me.state = 'error'; me.err = res.err; } }
+    } else {
+      me.err = ''; me.warn = ''; me.state = 'ready';
+      me.status = res.status || me.status;
+      if ('context' in res) me.ctx = res.context;
+      if (res.entries.length) {
+        const have = new Set(me.entries.map((e) => e.i));
+        me.entries = [...me.entries, ...res.entries.filter((e) => !have.has(e.i))].slice(-SV_KEEP);
+        me.lastNew = Date.now();
+      }
+      me.next = Math.max(me.next, res.next);
+    }
+  } catch (e) {
+    if (me === sv) { if (me.entries.length) me.warn = e.message; else { me.state = 'error'; me.err = e.message; } }
+  } finally {
+    me.busy = false;
+    if (me === sv) { svRefresh(); svSchedule(); }
+  }
+}
+
+function svRefresh() { chatKey = ''; if (data) renderChat(); }
+
+// Every 3 s while the view is open and the page visible; 10 s once nothing new has come for 5 min;
+// stops after 30 quiet minutes of an ended session (Refresh resumes).
+function svSchedule() {
+  clearTimeout(sv.timer);
+  if (!svSel || document.hidden) return;
+  const quiet = Date.now() - sv.lastNew;
+  const live = svLive(sv.status || svMeta()?.status);
+  if (!live && quiet > SV_STOP) { sv.stopped = true; svRefresh(); return; }
+  sv.timer = setTimeout(svPoll, sv.state === 'error' || quiet > SV_QUIET ? SV_SLOW : SV_POLL);
+}
+
+function svRetry() {
+  if (!svSel) return;
+  sv.stopped = false; sv.warn = ''; sv.lastNew = Date.now();
+  if (!sv.entries.length) { sv.state = 'loading'; sv.err = ''; }
+  svRefresh();
+  svPoll();
+}
+
+function svVisibility() {
+  if (!svSel) return;
+  if (document.hidden) clearTimeout(sv.timer); else if (!sv.stopped) svPoll();
+}
+
+function selectSession(agent, session) {
+  if ((agent !== 'claude' && agent !== 'codex') || typeof session !== 'string') return;
+  if (svSel && svSel.agent === agent && svSel.session === session) return;
+  clearTimeout(sv.timer);
+  svSel = { agent, session };
+  sv = svFresh();
+  const m = svMeta();
+  sv.title = m?.title || ''; sv.source = m?.source || ''; sv.status = m?.status || '';
+  svOpenTools.clear();
+  svKeyDone = '';
+  svRefresh();
+  svPoll();
+}
+
+function backToAda() {
+  if (!svSel) return;
+  clearTimeout(sv.timer);
+  svSel = null;
+  sv = svFresh();
+  svKeyDone = '';
+  svRefresh();
+  requestAnimationFrame(() => { const log = $('#chat-log'); log.scrollTop = log.scrollHeight; });
+}
+
+// "Ask Ada about this": a draft in the main chat that names the session; nothing is sent to the session itself.
+function askAboutSession() {
+  if (!svSel) return;
+  const m = svMeta();
+  const title = svTitle(m || { title: sv.title }).replace(/[[\]]/g, '').slice(0, 60);
+  const draft = `[re: ${title} session ${svSel.session.slice(0, 8)}] `;
+  backToAda();
+  const input = $('#chat-input');
+  input.value = draft + input.value;
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 168)}px`;
+  input.focus();
 }
 
 /* ---------------- activity (tiles, attention, now, by project, full timeline) ---------------- */
@@ -1981,6 +2228,7 @@ async function boot() {
   // isn't polled); it reconnects the moment it's visible again.
   let hideTimer = null;
   document.addEventListener('visibilitychange', () => {
+    svVisibility();
     if (document.hidden) {
       hideTimer = setTimeout(() => { paused = true; clearTimeout(timer); disconnectRelay(); setConn('', 'paused'); }, 60e3);
       return;

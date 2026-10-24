@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=ctx-1">
+  <link rel="stylesheet" href="style.css?v=sv-1">
 </head>
 <body>
   <!-- Locked: nothing below is readable until the password decrypts the feed. -->
@@ -62,7 +62,9 @@
         <div class="ch-title"><b>Ada<small id="ch-count"></small></b><div class="ch-ctx" id="chat-ctx" hidden></div><span id="chat-sub">safe by default</span></div>
         <button id="chat-menu" class="icon-btn" type="button" aria-label="Chat options"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
         <div class="work-strip" id="work-strip" aria-live="polite" hidden></div>
+        <div class="sv-bar" id="sv-bar" aria-label="Conversations" hidden></div>
       </header>
+      <div class="sv-banner" id="sv-banner" hidden></div>
       <ol class="chat-log" id="chat-log"></ol>
       <form class="composer" id="composer" onsubmit="return false">
         <div class="cmp-box">
@@ -82,6 +84,10 @@
           </div>
         </div>
       </form>
+      <div class="sv-actions" id="sv-actions" hidden>
+        <button type="button" class="sv-ask" data-sv-ask>Ask Ada about this</button>
+        <button type="button" class="sv-backbtn" data-sv-back>Back to Ada</button>
+      </div>
       <div class="sheet" id="brain-sheet" hidden>
         <div class="sheet-card">
           <div class="sheet-grab"></div>
@@ -193,6 +199,6 @@
       setTimeout(function () { if (!window.__adaBooted) say("Page failed to load (the script did not start). Reload, or clear this site's cache."); }, 4000);
     })();
   </script>
-  <script src="app.js?v=ctx-1" type="module"></script>
+  <script src="app.js?v=sv-1" type="module"></script>
 </body>
 </html>

@@ -137,15 +137,21 @@ function parseSession(file) {
   return s;
 }
 
-/** Context usage of one session by id (Ada's own head turns), or null when its transcript is not found. */
-export function claudeSessionContext(id) {
+/** Transcript file of one session by id, found only through the project folders this module already scans. Null when unknown. */
+export function claudeSessionFile(id) {
   if (!/^[\w-]{8,64}$/.test(String(id || ''))) return null;
   for (const d of safeReaddir(ROOT)) {
     if (!d.isDirectory()) continue;
     const file = path.join(ROOT, d.name, `${id}.jsonl`);
-    if (fs.existsSync(file)) return claudeContext(parseJsonLines(tailLines(file)));
+    if (fs.existsSync(file)) return file;
   }
   return null;
+}
+
+/** Context usage of one session by id (Ada's own head turns), or null when its transcript is not found. */
+export function claudeSessionContext(id) {
+  const file = claudeSessionFile(id);
+  return file ? claudeContext(parseJsonLines(tailLines(file))) : null;
 }
 
 export function collectClaude() {

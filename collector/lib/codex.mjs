@@ -135,10 +135,18 @@ function recentRollouts(now, days = 3) {
   return files;
 }
 
+/** Rollout file of one Codex session by id, found only through the day folders this module already scans. Null when unknown. */
+export function codexSessionFile(id) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(id || ''))) return null;
+  return recentRollouts(Date.now(), 90).find((p) => path.basename(p).includes(id)) || null;
+}
+
+/** A rollout (plain or .zst) as text. */
+export const readCodexRollout = readRollout;
+
 /** Context usage of one Codex session by id (Ada's own head turns), or null when its rollout is not found. */
 export function codexSessionContext(id) {
-  if (!/^[0-9a-f-]{36}$/i.test(String(id || ''))) return null;
-  const file = recentRollouts(Date.now(), 90).find((p) => path.basename(p).includes(id));
+  const file = codexSessionFile(id);
   if (!file) return null;
   const entries = parseJsonLines(readRollout(file).split('\n'));
   return codexContext(entries, entries.find((e) => e.type === 'turn_context' && e.payload?.model)?.payload.model || '');

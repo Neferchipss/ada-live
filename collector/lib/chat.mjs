@@ -15,7 +15,8 @@ import { limits as sharedLimits } from './limits.mjs';
 import { clip } from './util.mjs';
 import { MediaStore, checkAttachPath, cacheKey, validKey, formatSize, transcribe, MAX_ATTACH_PER_REPLY, CHUNK } from './media.mjs';
 import { UploadManager, UPLOAD } from './uploads.mjs';
-import { activeMap, findConflict, liveLine } from './journal.mjs';
+import { activeMap, findConflict, liveLine, locate, isAdaSession, sessionActive } from './journal.mjs';
+import { sessionTranscript } from './transcript.mjs';
 import { claudeSessionContext } from './claude.mjs';
 import { codexSessionContext } from './codex.mjs';
 import { learnWindow, learnedWindows, loadWindows, makeContext } from './context.mjs';
@@ -31,6 +32,11 @@ const MAX_NEED = 800;       // chunks one media request may ask for
 const HOLD_NOTICE_MS = 10 * 60e3;   // a held job is announced in chat after this long
 const DIGEST_FIRST_MS = 24 * 3600e3; // first activity digest looks back this far
 const MAX_SENDS = 3;        // media transfers running at once
+const SV_MIN_GAP = 1000;     // session-view: one request per second per session
+const SV_SEEN_MAX = 1000;   // session-view request ids remembered for replay protection (kept apart from the 500-entry window)
+const SV_CHUNK = 90000;     // characters of response JSON per sealed chunk (the relay carries 192 KB per message)
+const SV_LIST = 30;         // sessions in the switcher
+const SV_RECENT_MS = 24 * 3600e3;
 const THUMB_KEEP = 16;      // newest attachments that keep their inline thumbnail in the snapshot
 
 /** Prompt lines describing what Nefer uploaded, for Ada's head turn. Only his own uploads (they carry 'up'). */
@@ -89,6 +95,9 @@ export class ChatHub {
     this.transcribe = services.transcribe || transcribe;
     this.mediaOut = mediaOut || (async () => {});          // async (plain object) -> sealed + sent by collect.mjs
     this.relayMedia = relayMedia || (() => false);          // does the deployed relay carry media?
+    this.transcript = services.transcript || sessionTranscript;
+    this.svSeen = new Map();                                // session-view request id -> time (bounded, apart from state.seen)
+    this.svLast = new Map();                                // "agent:session" -> time of the last answered request
     this.sending = new Map();                               // "id:part" -> start time of a running transfer
     this.ffmpegOk = undefined;
     try { this.policy.operations(); } catch { /* invalid ops config is reported when proposed */ }
@@ -150,6 +159,8 @@ export class ChatHub {
     if (!Number.isFinite(cmd.ts) || Math.abs(this.now() - cmd.ts) > CLOCK_SKEW) return 'stale';
     // Upload chunks are far too many for the 500-entry replay window below, so they are
     // deduplicated per upload instead (index + finished-upload ids; see uploads.mjs).
+    // Session-view polls come every few seconds: they have their own bounded replay map and never touch the saved state.
+    if (cmd.type === 'session-view') return this.#sessionView(cmd);
     if (cmd.type === 'upload-chunk') { const why = this.uploads.chunk(cmd); return why === 'duplicate' ? null : why; }
     if (this.state.seen.includes(cmd.id)) return 'replayed';
     this.state.seen.push(cmd.id);
@@ -569,6 +580,86 @@ ${list}`;
     try { att.transcript = (await this.transcribe(info.real, `${prefix}.transcript.txt`)) || undefined; } catch { att.transcript = undefined; }
   }
 
+  // ---- read-only session viewer: Ada's worker jobs and Nefer's own terminal sessions ----
+
+  /** Every session the switcher can open, newest/active first: { agent, session, title, project, subfolder, source, mode?, status, startedAt, lastAt, context? }. */
+  #sessionList() {
+    const now = this.now();
+    let ext = {};
+    try { ext = this.external() || {}; } catch { /* a broken probe just means no terminal sessions */ }
+    const sessions = ext.sessions || [];
+    const byId = new Map(sessions.map((x) => [x.id, x]));
+    const projects = this.projects();
+    const own = this.ownSessions();
+    const jobs = this.state.jobs;
+    const where = (cwd) => {
+      const loc = cwd ? locate(projects, this.workRoot, cwd) : null;
+      return loc ? { project: loc.project, subfolder: loc.sub } : { project: cwd ? path.basename(cwd) : '', subfolder: '' };
+    };
+    const out = [];
+    const taken = new Set();
+    for (const j of jobs) {
+      if (!j.session || j.mode === 'ops' || (j.agent !== 'claude' && j.agent !== 'codex')) continue;
+      const active = j.status === 'running' || j.status === 'killing';
+      const x = byId.get(j.session);
+      const last = Math.max(j.endedAt || 0, j.startedAt || 0, j.createdAt || 0, x?.lastActivity || 0);
+      if (!active && now - last > SV_RECENT_MS) continue;
+      taken.add(j.session);
+      out.push({
+        agent: j.agent, session: j.session, title: clip(j.title, 80), ...where(j.folder), source: 'job', mode: normalizeMode(j.mode),
+        status: active ? (x?.status === 'blocked' ? 'blocked' : 'working') : (j.status === 'done' ? 'done' : 'failed'),
+        startedAt: j.startedAt || j.createdAt || 0, lastAt: last, ...(x?.context ? { context: x.context } : {}),
+      });
+    }
+    for (const x of sessions) {
+      if (taken.has(x.id) || own.has(x.id) || isAdaSession(x, { own, jobs })) continue;
+      if (now - (x.lastActivity || 0) > SV_RECENT_MS) continue;
+      out.push({
+        agent: x.agent, session: x.id, title: clip(x.title, 80), ...where(x.cwd), source: 'terminal',
+        status: sessionActive(x, now) ? x.status : 'idle', startedAt: x.startedAt || 0, lastAt: x.lastActivity || 0, ...(x.context ? { context: x.context } : {}),
+      });
+    }
+    const live = (e) => (e.status === 'working' || e.status === 'blocked' ? 1 : 0);
+    return out.sort((a, b) => live(b) - live(a) || b.lastAt - a.lastAt);
+  }
+
+  // The page asks for new entries of one session; the answer goes back as sealed chunks on the media channel.
+  #sessionView(cmd) {
+    const now = this.now();
+    for (const [k, t] of this.svSeen) { if (now - t <= 2 * CLOCK_SKEW) break; this.svSeen.delete(k); }
+    if (this.svSeen.has(cmd.id)) return 'replayed';
+    this.svSeen.set(cmd.id, now);
+    while (this.svSeen.size > SV_SEEN_MAX) this.svSeen.delete(this.svSeen.keys().next().value);
+    const agent = cmd.agent, session = cmd.session;
+    if (agent !== 'claude' && agent !== 'codex') return 'bad agent';
+    if (typeof session !== 'string' || !/^[\w-]{8,64}$/.test(session)) return 'bad session';
+    const after = cmd.after === undefined || cmd.after === null ? -1 : cmd.after;
+    if (!Number.isSafeInteger(after) || after < -1) return 'bad cursor';
+    if (!this.relayMedia()) return 'relay cannot carry sessions';
+    const key = `${agent}:${session}`;
+    if (now - (this.svLast.get(key) || 0) < SV_MIN_GAP) { this.#svSend(cmd.id, { ok: false, err: 'slow down' }); return 'rate limited'; }
+    this.svLast.set(key, now);
+    if (this.svLast.size > 200) for (const [k, t] of this.svLast) if (now - t > 60e3) this.svLast.delete(k);
+    let res;
+    try {
+      const list = this.#sessionList();
+      const known = new Set(list.map((e) => `${e.agent}:${e.session}`));
+      res = this.transcript(agent, session, { after: after >= 0 ? after : undefined }, { known: (a, id) => known.has(`${a}:${id}`) });
+      const meta = list.find((e) => e.agent === agent && e.session === session);
+      if (res.ok && meta) res.status = meta.status, res.context = meta.context || null;
+    } catch (e) { res = { ok: false, err: clip(e.message, 120) }; }
+    this.#svSend(cmd.id, res);
+    return res.ok ? null : res.err;
+  }
+
+  #svSend(rid, res) {
+    const body = JSON.stringify(res);
+    const n = Math.max(1, Math.ceil(body.length / SV_CHUNK));
+    (async () => {
+      for (let i = 0; i < n; i++) await this.mediaOut({ sv: rid, i, n, d: body.slice(i * SV_CHUNK, (i + 1) * SV_CHUNK) });
+    })().catch(() => {});
+  }
+
   #findAtt(id) {
     for (let i = this.t.messages.length - 1; i >= 0; i--) {
       const a = this.t.messages[i].atts?.find((x) => x.id === id);
@@ -853,6 +944,7 @@ ${j.prompt}`;
       // relay: the deployed relay can carry media (else the page hides the paperclip); uploads: progress + missing chunks
       media: { relay: !!this.relayMedia(), ffmpeg: this.ffmpegOk, maxUpload: UPLOAD.maxBytes, maxFiles: UPLOAD.maxGroup, chunk: 48 * 1024 },
       uploads: this.uploads.status(),
+      sessions: this.#sessionList().slice(0, SV_LIST),
     };
   }
 }

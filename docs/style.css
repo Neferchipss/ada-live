@@ -653,3 +653,48 @@ div.attn-row { cursor: default; }
 .sec-row .attn-all { float: none; margin-left: 0; }
 #act-hist > summary { font-size: 11px; color: var(--dim); }
 .pj-sub .ctx { align-self: center; }
+
+/* ---------- session viewer: switcher chips, banner, read-only transcript ---------- */
+.sv-bar { flex: 1 0 100%; display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; padding: 2px 0; min-width: 0; }
+.sv-bar::-webkit-scrollbar { display: none; }
+.sv-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: 70vw; border: 1px solid var(--line) !important; background: var(--bg-2) !important; border-radius: 999px; padding: 5px 10px; font: 12px var(--mono) !important; color: var(--muted) !important; cursor: pointer; white-space: nowrap; }
+.sv-chip.on { border-color: rgba(224, 38, 63, .6) !important; background: var(--red-soft) !important; color: var(--text) !important; }
+.sv-chip .sv-t { overflow: hidden; text-overflow: ellipsis; }
+.sv-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--idle); flex: none; display: inline-block; }
+.sv-chip[data-s='working'] .sv-dot, .sv-dot.live { background: #4cd08a; box-shadow: 0 0 0 0 rgba(76, 208, 138, .6); animation: sv-pulse 1.8s ease-out infinite; }
+.sv-chip[data-s='blocked'] .sv-dot { background: var(--amber); }
+.sv-chip[data-s='failed'] .sv-dot { background: var(--red); }
+.sv-chip:not([data-s='working']):not([data-s='blocked']) { opacity: .78; }
+.sv-chip.on, .sv-chip.sv-ada { opacity: 1; }
+.sv-tag { font: 600 9.5px var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--dim); border: 1px solid var(--line); border-radius: 6px; padding: 0 4px; }
+.sv-chip[data-agent='codex'] .sv-tag { color: var(--codex); border-color: rgba(63, 182, 168, .35); }
+.sv-pct { font: 600 10.5px var(--mono); color: var(--muted); }
+.sv-pct.hot { color: var(--amber); } .sv-pct.crit { color: var(--red); }
+.sv-sep { flex: none; font: 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--dim); padding: 0 2px 0 6px; }
+@keyframes sv-pulse { 70% { box-shadow: 0 0 0 6px rgba(76, 208, 138, 0); } 100% { box-shadow: 0 0 0 0 rgba(76, 208, 138, 0); } }
+
+.sv-banner { position: relative; z-index: 2; margin: 0 -16px; padding: 8px 16px; background: var(--bg-2); border-bottom: 1px solid var(--line); display: grid; gap: 4px; font-size: 12.5px; }
+.sv-b1, .sv-b2 { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.sv-bt { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+.sv-bt b { color: var(--text); }
+.sv-back, .sv-b2 .link { font: 600 12px var(--mono); color: #ff8798; white-space: nowrap; }
+.sv-b2 { color: var(--dim); font: 11px var(--mono); }
+
+.msg.sv-a .md { padding-left: 0; }
+.sv-who { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; color: var(--muted); }
+.sv-who time { font: 10.5px var(--mono); color: var(--dim); margin-left: auto; }
+.msg.sv-a[data-agent='codex'] .sv-who b { color: var(--codex); }
+.sv-tool { align-self: stretch; }
+.sv-tl { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 1px solid var(--line) !important; background: var(--bg-2) !important; border-radius: 10px; padding: 6px 10px; font: 12px var(--mono) !important; color: var(--muted) !important; min-width: 0; }
+.sv-tn { flex: none; color: var(--text); font-weight: 600; }
+.sv-tx { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sv-ch { flex: none; transition: transform .15s; }
+.sv-tool.open .sv-ch { transform: rotate(90deg); }
+.sv-tool.err .sv-tl { border-color: rgba(224, 38, 63, .5) !important; }
+.sv-res { margin: 4px 0 0; padding: 10px 12px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; font: 12px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }
+.sv-state.err { color: var(--amber); }
+
+.sv-actions { position: fixed; left: 0; right: 0; bottom: calc(62px + var(--safe-b)); z-index: 5; max-width: 720px; margin: 0 auto; padding: 10px 12px 8px; display: flex; gap: 8px; background: linear-gradient(transparent, var(--bg) 30%); }
+body:not(.in-chat) .sv-actions { display: none; }
+.sv-actions button { flex: 1; border: 1px solid var(--line) !important; background: var(--card) !important; border-radius: 999px; padding: 12px 14px; font: 600 14px var(--sans) !important; }
+.sv-actions .sv-ask { background: var(--red-soft) !important; border-color: rgba(224, 38, 63, .5) !important; }
