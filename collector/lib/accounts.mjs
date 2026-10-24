@@ -147,7 +147,7 @@ async function higgsfieldAccount() {
   try {
     const result = await readHiggsfield();
     if (result.error) return { ...acct, error: result.error, asOf: result.asOf || 0 };
-    return { ...acct, plan: result.plan, credits: result.credits, asOf: result.asOf, live: true };
+    return { ...acct, plan: result.plan, credits: result.credits, planCredits: result.planCredits, renewsAt: result.renewsAt, asOf: result.asOf, live: true };
   } catch (e) {
     return { ...acct, error: `Higgsfield check failed (${e.message})` };
   }

@@ -316,7 +316,8 @@ function higgsfieldCard(a) {
       <div class="a-email">${esc(a.email || 'not signed in')}</div>
       <div class="a-surf">${(a.surfaces || []).map((s) => `<span class="pill">${esc(s)}</span>`).join('')}</div>
       ${a.error ? `<div class="a-err">${esc(a.error)}</div>` : ''}
-      ${hasCredits ? `<div class="a-credits"><strong>${esc(a.credits.toLocaleString(undefined, { maximumFractionDigits: 20 }))}</strong><span>credits</span></div>` : '<div class="a-credit-empty">Credit balance unavailable</div>'}
+      ${hasCredits ? `<div class="a-credits"><strong>${esc(a.credits.toLocaleString(undefined, { maximumFractionDigits: 2 }))}</strong><span>credits${Number.isFinite(a.planCredits) ? ` of ${esc(a.planCredits.toLocaleString())} plan` : ''}</span></div>` : '<div class="a-credit-empty">Credit balance unavailable</div>'}
+      ${hasCredits && Number.isFinite(a.renewsAt) ? `<div class="t-sub">plan renews ${esc(new Date(a.renewsAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }))}</div>` : ''}
       <p class="a-note">${esc(a.shared || '')}</p>
     </article>`;
 }

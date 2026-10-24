@@ -22,7 +22,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { debuglog } from 'node:util';
 
-// ----- Higgsfield extraction tuning: selectors and regexes (UNTESTED live) -----
+// ----- Higgsfield page-scrape fallback: selectors and regexes (used only if the account API is not seen) -----
 const NUMBER = '(?:\\d{1,3}(?:[, \\u00a0]\\d{3})+|\\d+)(?:\\.\\d+)?';
 export const HIGGSFIELD_MATCH = {
   accountMenus: ['[data-testid="account-menu-trigger"]', '[aria-label="Account menu"]', '[aria-label="Profile menu"]'],
@@ -132,6 +132,22 @@ export function extractHiggsfield(html, { debug: log = debug } = {}) {
   } catch { return { error: 'Higgsfield page extraction failed; adjust the extraction tuning block' }; }
 }
 
+// The site's own account API (seen live 2026-10-24): GET fnf-api-gw.higgsfield.ai/fnf/user returns
+// plan_type, the credit buckets and total_plan_credits. Reading it beats scraping, which has no balance
+// on the homepage. Only these fields are kept; the rest of the response is ignored.
+export const HIGGSFIELD_USER_API = /^https:\/\/fnf-api-gw\.higgsfield\.ai\/fnf\/user(?:\?|$)/;
+export function fromUserApi(body) {
+  let u; try { u = JSON.parse(body); } catch { return null; }
+  if (!u || typeof u !== 'object' || typeof u.plan_type !== 'string') return null;
+  const buckets = ['subscription_credits', 'package_credits', 'bonus_credits', 'daily_credits'].map((k) => Number(u[k]) || 0);
+  const credits = Math.round(buckets.reduce((a, b) => a + b, 0) * 100) / 100;
+  if (!Number.isFinite(credits) || credits < 0) return null;
+  const plan = u.plan_type.replace(/[_-]+/g, ' ').replace(/(^|\s)\w/g, (c) => c.toUpperCase());
+  const total = Number(u.total_plan_credits);
+  const renews = Date.parse(u.plan_ends_at || '');
+  return { credits, plan, ...(Number.isFinite(total) && total > 0 ? { planCredits: total } : {}), ...(Number.isFinite(renews) ? { renewsAt: renews } : {}) };
+}
+
 function chromePath() {
   const candidates = [process.env.HIGGSFIELD_CHROME,
     path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
@@ -196,8 +212,10 @@ async function devtools(endpoint, signal) {
   const socket = new WebSocket(endpoint);
   const replies = new Map(); let id = 0;
   const fail = () => { for (const { reject } of replies.values()) reject(new Error('Higgsfield browser connection closed')); replies.clear(); };
+  const listeners = [];
   socket.addEventListener('message', ({ data }) => {
     let message; try { message = JSON.parse(data); } catch { return; }
+    if (message.method && !message.id) { for (const fn of listeners) fn(message); return; }
     const response = replies.get(message.id); if (!response) return;
     replies.delete(message.id);
     if (message.error) response.reject(new Error('Higgsfield browser command failed'));
@@ -214,6 +232,7 @@ async function devtools(endpoint, signal) {
     }), signal);
   } catch (e) { close(); throw e; }
   return {
+    on: (fn) => listeners.push(fn),
     close: () => { signal.removeEventListener('abort', close); close(); },
     send: (method, params = {}, sessionId) => abortable(new Promise((resolve, reject) => {
       const next = ++id; replies.set(next, { resolve, reject });
@@ -251,11 +270,25 @@ async function collect() {
     connection = await devtools(await abortable(browser.ready, controller.signal), controller.signal);
     const { targetId } = await connection.send('Target.createTarget', { url: 'about:blank' });
     const { sessionId } = await connection.send('Target.attachToTarget', { targetId, flatten: true });
+    let fromApi = null;
+    const userRequests = new Map();
+    connection.on((m) => {
+      if (m.sessionId !== sessionId || m.method !== 'Network.loadingFinished') return;
+      const url = userRequests.get(m.params.requestId); if (!url) return;
+      connection.send('Network.getResponseBody', { requestId: m.params.requestId }, sessionId)
+        .then((r) => { const v = fromUserApi(r.base64Encoded ? Buffer.from(r.body, 'base64').toString('utf8') : r.body); if (v) fromApi = v; })
+        .catch(() => {});
+    });
+    connection.on((m) => {
+      if (m.sessionId === sessionId && m.method === 'Network.responseReceived' && m.params.response.status === 200 && HIGGSFIELD_USER_API.test(m.params.response.url)) userRequests.set(m.params.requestId, m.params.response.url);
+    });
+    await connection.send('Network.enable', {}, sessionId);
     const navigation = await connection.send('Page.navigate', { url: URL }, sessionId);
     if (navigation.errorText) throw new Error('Higgsfield website could not be loaded; check the connection');
     let result = { error: 'Higgsfield account page has not loaded' }, menuOpened = false;
     for (let attempt = 0; attempt < 24; attempt++) {
       await delay(1000, controller.signal);
+      if (fromApi) return { ...fromApi, asOf: Date.now() };
       const expression = `(() => {
         const copy = document.documentElement.cloneNode(true);
         const live = document.documentElement.querySelectorAll('*');
