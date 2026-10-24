@@ -148,7 +148,7 @@ export function fromUserApi(body) {
   return { credits, plan, ...(Number.isFinite(total) && total > 0 ? { planCredits: total } : {}), ...(Number.isFinite(renews) ? { renewsAt: renews } : {}) };
 }
 
-function chromePath() {
+export function chromePath() {
   const candidates = [process.env.HIGGSFIELD_CHROME,
     path.join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
     path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
