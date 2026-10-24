@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=chat-simple-1">
+  <link rel="stylesheet" href="style.css?v=safety-1">
 </head>
 <body>
   <!-- Locked: nothing below is readable until the password decrypts the feed. -->
@@ -36,6 +36,7 @@
   </main>
 
   <div id="app" class="app" hidden>
+    <div id="err-bar" class="err-bar" role="alert" hidden></div>
     <header class="top">
       <div class="brand">ADA<span>live</span></div>
       <div class="conn" id="conn"><i></i><span id="conn-text">connecting</span></div>
@@ -183,6 +184,14 @@
     </nav>
   </div>
 
-  <script src="app.js?v=chat-simple-1" type="module"></script>
+  <script>
+    // If the module never starts (syntax error, failed import), say so on the login form instead of doing nothing.
+    (function () {
+      function say(m) { var e = document.getElementById("login-error"); if (e && !e.textContent) e.textContent = m; }
+      window.addEventListener("error", function (ev) { say("Page failed to load: " + (ev.message || "script error")); });
+      setTimeout(function () { if (!window.__adaBooted) say("Page failed to load (the script did not start). Reload, or clear this site's cache."); }, 4000);
+    })();
+  </script>
+  <script src="app.js?v=safety-1" type="module"></script>
 </body>
 </html>

@@ -601,3 +601,7 @@ div.attn-row { cursor: default; }
 @media (prefers-reduced-motion: reduce) { .ap-head svg { transition: none; } }
 
 #act-hist { margin-top: 14px; }
+
+.err-bar { position: sticky; top: 0; z-index: 50; }
+.err-line { background: #5a1620; color: #ffd6da; font: 12px var(--mono); padding: 6px 12px; border-bottom: 1px solid #a8323f; cursor: pointer; word-break: break-word; }
+.err-line::after { content: " ✕"; opacity: 0.7; }

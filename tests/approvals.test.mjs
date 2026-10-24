@@ -61,10 +61,10 @@ test('new approvals: first snapshot seeds, each job reported once', () => {
 test('page wiring: panel, review button, no duplicate strip buttons, cache-bust', () => {
   const read = (f) => fs.readFileSync(fileURLToPath(new URL(`../docs/${f}`, import.meta.url)), 'utf8');
   const app = read('app.js'), html = read('index.html');
-  assert.match(app, /from '\.\/approvals\.mjs'/);
+  assert.match(app, /from '\.\/approvals\.mjs\?v=safety-1'/);
   assert.match(html, /id="appr-bar"/);
   assert.match(html, /id="approvals-sheet"/);
-  assert.match(html, /app\.js\?v=chat-simple-1/);
+  assert.match(html, /app\.js\?v=safety-1/);
   const strip = app.slice(app.indexOf('function stripRow'), app.indexOf('function extRow'));
   assert.ok(!strip.includes('approvalControls'));
   assert.ok(strip.includes('data-review'));

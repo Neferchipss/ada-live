@@ -2,8 +2,8 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, recentResolved, outcomeLabel, countdown, newApprovals } from './approvals.mjs';
-import { PROJECT_LIMIT, todayStats, needsAttention, waitingApprovals, nowGroups, byProject, projectOf, timelineRows } from './activity-model.mjs?v=activity-1';
+import { pendingApprovals, openApprovals, soonestExpiry, recentResolved, outcomeLabel, countdown, newApprovals } from './approvals.mjs?v=safety-1';
+import { PROJECT_LIMIT, todayStats, needsAttention, waitingApprovals, nowGroups, byProject, projectOf, timelineRows } from './activity-model.mjs?v=safety-1';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -223,18 +223,37 @@ function setConn(cls, text) {
 const agentLabel = { claude: 'Claude', codex: 'Codex', chatgpt: 'ChatGPT', task: 'Task', ada: 'Ada' };
 
 /* ---------------- render ---------------- */
+// One failing section must not stop the rest, block unlock, or hide itself: log it and show a red line.
+const shownErrors = new Set();
+function showError(label, err) {
+  const msg = `${label}: ${err?.message || err}`;
+  console.error('[ada]', label, err);
+  if (shownErrors.has(msg)) return;
+  shownErrors.add(msg);
+  const bar = $('#err-bar');
+  if (!bar) return;
+  const line = document.createElement('div');
+  line.className = 'err-line';
+  line.textContent = msg;
+  line.addEventListener('click', () => { line.remove(); shownErrors.delete(msg); if (!bar.children.length) bar.hidden = true; });
+  bar.appendChild(line);
+  bar.hidden = false;
+}
+function guarded(name, fn) {
+  try { return fn(); } catch (err) { showError(`Section ${name} failed`, err); }
+}
+
 function render() {
   if (!data) return;
-  renderPresence();
-  limitKey = ''; // renderLimits redraws the accounts too, so the LIMIT badges match
-  renderLimits();
-  renderPC();
-  renderFlow();
-  renderChat();
-  renderStrip();
-  renderActivity();
-  renderWork();
-  tickClock();
+  guarded('presence', renderPresence);
+  guarded('limits', () => { limitKey = ''; /* renderLimits redraws the accounts too, so the LIMIT badges match */ renderLimits(); });
+  guarded('pc', renderPC);
+  guarded('flow', renderFlow);
+  guarded('chat', renderChat);
+  guarded('strip', renderStrip);
+  guarded('activity', renderActivity);
+  guarded('work', renderWork);
+  guarded('clock', tickClock);
 }
 
 function renderPresence() {
@@ -493,6 +512,7 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 // Collapsible Git section for a GitHub project: status, last push, commits, pushes. Every value is escaped.
 function gitSection(p, g) {
+  g = { ...g, commits: g.commits || [], pushes: g.pushes || [] };
   const onGithub = g.remoteBranch ? '' : ' · branch not on GitHub';
   const status = [g.branch || 'detached HEAD', `${g.ahead} not pushed${onGithub}`, `${g.behind} behind`, `${g.dirty} uncommitted`].join(' · ');
   const lastPush = g.lastPush
@@ -1613,7 +1633,7 @@ function historyHtml(items) {
   }).join('');
 }
 
-function projectCard(g) {
+function activityProjectCard(g) {
   const chips = [['tasks', 'task'], ['sessions', 'session'], ['commits', 'commit'], ['unpushed', 'unpushed']]
     .filter(([k]) => g.counts[k]).map(([k, w]) => `<span class="ap-chip" data-k="${k}">${k === 'unpushed' ? `${g.counts[k]} unpushed` : plural(g.counts[k], w)}</span>`).join('');
   const prev = g.items.slice(0, 3).map(lineHtml).join('');
@@ -1631,7 +1651,7 @@ function renderProjects() {
   const groups = byProject(data);
   if (!groups.length) { $('#act-projects').innerHTML = ''; return; }
   const shown = groups.slice(0, projShown);
-  $('#act-projects').innerHTML = `<h2 class="sec">By project <small>${groups.length}</small></h2>${shown.map(projectCard).join('')}${groups.length > shown.length ? `<button type="button" class="ws-more ap-more" data-more>Show ${groups.length - shown.length} more</button>` : ''}`;
+  $('#act-projects').innerHTML = `<h2 class="sec">By project <small>${groups.length}</small></h2>${shown.map(activityProjectCard).join('')}${groups.length > shown.length ? `<button type="button" class="ws-more ap-more" data-more>Show ${groups.length - shown.length} more</button>` : ''}`;
 }
 
 function renderTimeline() {
@@ -1762,11 +1782,19 @@ async function unlock(e) {
     lastFetchOk = Date.now();
     if ($('#remember').checked) rememberKey();
     password = null; // the derived key is enough from here on
-    enterApp();
   } catch (err) {
     password = null;
     keyCache = { salt: null, key: null };
+    data = null;
     $('#login-error').textContent = err.name === 'OperationError' ? 'Wrong password.' : `Can't reach the feed (${err.message}).`;
+    btn.disabled = false;
+    btn.textContent = 'Unlock';
+    return;
+  }
+  // Decrypted fine: from here the app is shown no matter what, and a failure is shown as an error line.
+  try { enterApp(); } catch (err) {
+    showError('Starting the app failed', err);
+    try { $('#login').hidden = true; $('#app').hidden = false; } catch {}
   } finally {
     btn.disabled = false;
     btn.textContent = 'Unlock';
@@ -1776,17 +1804,20 @@ async function unlock(e) {
 function enterApp() {
   $('#login').hidden = true;
   $('#app').hidden = false;
-  let tab = 'now';
-  try { tab = sessionStorage.getItem('ada-tab') || 'now'; } catch {}
-  if (!document.querySelector(`.view[data-view="${tab}"]`)) tab = 'now';
-  show(tab);
-  render();
   timer = setTimeout(poll, (config.pollSec || 10) * 1000);
-  connectRelay();
+  guarded('tabs', () => {
+    let tab = 'now';
+    try { tab = sessionStorage.getItem('ada-tab') || 'now'; } catch {}
+    if (!document.querySelector(`.view[data-view="${tab}"]`)) tab = 'now';
+    show(tab);
+  });
+  render();
+  guarded('relay', connectRelay);
 }
 
 let configReady;
 async function boot() {
+  window.__adaBooted = true;
   // Hook the form first so an early submit never falls through to a page reload.
   $('#login-form').addEventListener('submit', async (e) => { e.preventDefault(); await configReady; unlock(e); });
   configReady = (async () => {
@@ -1805,8 +1836,8 @@ async function boot() {
   });
   $('#search').addEventListener('input', () => renderWork());
   $('#unpushed-chip').addEventListener('click', () => { unpushedFirst = !unpushedFirst; renderWork(); });
-  bindChat();
-  bindActivity();
+  guarded('chat controls', bindChat);
+  guarded('activity controls', bindActivity);
   $('#kind-filter').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
     kindFilter = b.dataset.k;
@@ -1846,5 +1877,9 @@ async function boot() {
     lock();
   }
 }
+
+// Nothing fails silently: stray errors and rejected promises land in the same red line.
+window.addEventListener?.('error', (ev) => showError('Page error', ev.error || ev.message));
+window.addEventListener?.('unhandledrejection', (ev) => showError('Page error', ev.reason));
 
 boot();
