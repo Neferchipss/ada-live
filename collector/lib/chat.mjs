@@ -13,6 +13,8 @@ import { FullModePolicy, normalizeMode } from './fullmode.mjs';
 import { appendTaskEvent } from './tasks.mjs';
 import { limits as sharedLimits } from './limits.mjs';
 import { clip } from './util.mjs';
+import { MediaStore, checkAttachPath, cacheKey, validKey, formatSize, transcribe, MAX_ATTACH_PER_REPLY, CHUNK } from './media.mjs';
+import { UploadManager, UPLOAD } from './uploads.mjs';
 
 const THREAD = 'ada';
 const MAX_WORKERS = 2;
@@ -21,6 +23,24 @@ const MAX_TEXT = 8000;
 const CLOCK_SKEW = 10 * 60e3;
 const RECAP_MESSAGES = 30;
 const newId = () => crypto.randomBytes(5).toString('hex');
+const MAX_NEED = 800;       // chunks one media request may ask for
+const MAX_SENDS = 3;        // media transfers running at once
+const THUMB_KEEP = 16;      // newest attachments that keep their inline thumbnail in the snapshot
+
+/** Prompt lines describing what Nefer uploaded, for Ada's head turn. Only his own uploads (they carry 'up'). */
+export function attachmentLines(atts = []) {
+  const lines = [];
+  for (const a of atts) {
+    if (!a?.up || !a.src) continue;
+    lines.push(`[Nefer attached: ${a.src} (${a.kind}, ${formatSize(a.size)})]`);
+    if (a.kind !== 'video') continue;
+    lines.push(a.frames?.length
+      ? `[Video frames from ${a.name}, evenly spaced across the clip. You cannot play video, only look at these stills: ${a.frames.join(' ; ')}]`
+      : `[${a.name}: no frames could be extracted (ffmpeg missing or failed). You cannot watch it.]`);
+    lines.push(a.transcript ? `[Transcript of ${a.name}: ${a.transcript}]` : '[No transcript: no local speech-to-text tool is installed, so frames only.]');
+  }
+  return lines;
+}
 
 // Ada's ghost: public soul + private memory (local clones).
 const GHOST = path.join(os.homedir(), 'Desktop', 'Ada', 'Ada', 'ada-ghost');
@@ -35,7 +55,7 @@ function codexModels() {
 }
 
 export class ChatHub {
-  constructor({ workRoot, projects, onChange, onRestart, stateDir = STATE_DIR, services = {} }) {
+  constructor({ workRoot, projects, onChange, onRestart, stateDir = STATE_DIR, services = {}, mediaOut, relayMedia }) {
     this.workRoot = path.resolve(workRoot);
     this.projects = projects; // () => project list (Ada's map of the Work folder)
     this.onChange = onChange || (() => {});
@@ -52,10 +72,23 @@ export class ChatHub {
     this.policy = services.policy || new FullModePolicy({ stateDir, workRoot: this.workRoot, projects, now: this.now });
     this.approvalTimer = null;
     this.pumping = false;
+    // Media: files Ada shows (cache) and files Nefer uploads (inbox). Chunks go out through mediaOut.
+    this.inbox = path.join(stateDir, 'inbox');
+    this.media = services.media || new MediaStore({ dir: path.join(stateDir, 'media-cache') });
+    this.transcribe = services.transcribe || transcribe;
+    this.mediaOut = mediaOut || (async () => {});          // async (plain object) -> sealed + sent by collect.mjs
+    this.relayMedia = relayMedia || (() => false);          // does the deployed relay carry media?
+    this.sending = new Map();                               // "id:part" -> start time of a running transfer
+    this.ffmpegOk = undefined;
     try { this.policy.operations(); } catch { /* invalid ops config is reported when proposed */ }
     this.procs = new Map(); // job id or 'head' -> child
     this.state = { thread: null, jobs: [], projectSessions: {}, seen: [] };
     try { Object.assign(this.state, JSON.parse(fs.readFileSync(this.file, 'utf8'))); } catch {}
+    this.state.uploadsDone ||= [];
+    this.uploads = services.uploads || new UploadManager({ dir: this.inbox, now: this.now, recent: this.state.uploadsDone, onGroup: (g) => this.#uploadGroup(g) });
+    this.uploads.init();
+    const sweeper = setInterval(() => this.uploads.sweep(), 30e3);
+    sweeper.unref?.();
     this.state.thread ||= { id: THREAD, brain: { agent: 'claude', model: '' }, heads: {}, lastAgent: null, messages: [], pending: [], busy: false };
     const t = this.state.thread;
     // Anything mid-flight when the collector stopped is gone now.
@@ -70,6 +103,11 @@ export class ChatHub {
         t.pending.push({ title: j.title, folder: j.folder, mode: j.mode, status: 'failed', result: j.result });
       }
     }
+    // Attachments or held uploads mid-flight when the collector stopped will not finish.
+    for (const m of t.messages) {
+      m.hold = undefined;
+      for (const a of m.atts || []) if (a.state === 'processing') { a.state = 'failed'; a.error = 'The collector restarted while this was being prepared.'; }
+    }
     t.busy = false;
     this.#save();
   }
@@ -78,6 +116,7 @@ export class ChatHub {
 
   #save() {
     fs.mkdirSync(this.stateDir, { recursive: true });
+    if (this.uploads) this.state.uploadsDone = this.uploads.dumpRecent();
     const tmp = this.file + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(this.state));
     fs.renameSync(tmp, this.file);
@@ -96,6 +135,9 @@ export class ChatHub {
   handle(cmd) {
     if (!cmd || cmd.kind !== 'cmd' || typeof cmd.id !== 'string' || !cmd.id || cmd.id.length > 128) return 'not a command';
     if (!Number.isFinite(cmd.ts) || Math.abs(this.now() - cmd.ts) > CLOCK_SKEW) return 'stale';
+    // Upload chunks are far too many for the 500-entry replay window below, so they are
+    // deduplicated per upload instead (index + finished-upload ids; see uploads.mjs).
+    if (cmd.type === 'upload-chunk') { const why = this.uploads.chunk(cmd); return why === 'duplicate' ? null : why; }
     if (this.state.seen.includes(cmd.id)) return 'replayed';
     this.state.seen.push(cmd.id);
     this.state.seen = this.state.seen.slice(-500);
@@ -110,6 +152,7 @@ export class ChatHub {
     if (cmd.type === 'kill') return this.#kill(cmd.job);
     if (cmd.type === 'stop') return this.#stop();
     if (cmd.type === 'reset') return this.#reset();
+    if (cmd.type === 'media-get') return this.#mediaGet(cmd);
     return 'unknown type';
   }
 
@@ -282,6 +325,21 @@ To start workers, end your reply with exactly one jobs block:
 - Don't start jobs for questions you can answer by reading.
 Results arrive in later messages marked [Job results]. Tell Nefer what changed, where, and anything he must do himself.
 
+## Showing files to Nefer
+To put a file on his phone, end your reply with one attach block (it can sit next to a jobs block):
+<attach>
+[{"path":"<absolute path>","caption":"short caption"}]
+</attach>
+- At most ${MAX_ATTACH_PER_REPLY} files per reply. Paths must be absolute and inside ${this.workRoot} or ${this.inbox}; links that lead elsewhere are refused.
+- Allowed: images (png, jpg, jpeg, webp, gif), video (mp4, webm, mov), pdf, and text files (txt, md, json, csv). Files that look like secrets (.env, names containing secret, token, password, credential, key) are never sent.
+- Images are shrunk to 1600 px. Video is converted to 720p H.264 under 20 MB (a very long clip may be refused; the chat says so). PDFs and text show as a file card, downloadable up to 8 MB.
+- He sees images inline and video behind a play button. Say in your text what the file is; the caption is only a label. Only attach when it helps.
+
+## Files from Nefer
+He can attach files with the paperclip in the composer: images, video, pdf, txt, md, json, csv, up to ${UPLOAD.maxBytes / 1048576} MB each. They are saved in ${this.inbox} as <id>-<name>, and his message lists each one as [Nefer attached: <path> (<kind>, <size>)]. Read images, PDFs and text there directly.
+- You cannot play video. For a video you get up to 8 evenly spaced still frames (listed in his message) and, only when a local speech-to-text tool is installed, a transcript file; otherwise frames only. If that limits your answer, say so plainly.
+- Safe-mode workers cannot read ${this.inbox}. To give a worker a file, propose a full-mode job whose prompt says to copy it from the inbox into the project folder (he approves it with his PIN), or ask Nefer to put it there.
+
 ## Projects under ${this.workRoot}, most recently active first
 ${list}`;
   }
@@ -310,14 +368,14 @@ ${list}`;
     t.busy = true;
     const { agent, model } = t.brain;
     const results = t.pending.splice(0);
-    const unanswered = t.messages.filter((m) => m.role === 'user' && !m.answered);
+    const unanswered = t.messages.filter((m) => m.role === 'user' && !m.answered && !m.hold);
     const parts = [];
     const resume = t.heads[agent] || null;
     if (t.lastAgent && t.lastAgent !== agent) { const r = this.#recap(agent); if (r) parts.push(r); }
     if (results.length) {
       parts.push('[Job results]\n' + results.map((r) => `- ${r.title} — ${r.folder} — ${r.mode && r.mode !== 'safe' ? `${r.mode.toUpperCase()} · ` : ''}${r.status}\n${clip(r.result || '', 1500)}`).join('\n'));
     }
-    if (unanswered.length) parts.push(unanswered.map((m) => `[Nefer] ${m.text}`).join('\n\n'));
+    if (unanswered.length) parts.push(unanswered.map((m) => [`[Nefer] ${m.text || '(no message, just the attachments)'}`, ...attachmentLines(m.atts)].join('\n')).join('\n\n'));
     unanswered.forEach((m) => { m.answered = true; });
     if (!parts.length) { t.busy = false; return; }
     const lastUser = unanswered.at(-1);
@@ -328,7 +386,7 @@ ${list}`;
       resume,
       // Claude takes the system prompt every turn (stays fresh); Codex only when its session starts.
       system: agent === 'claude' || !resume ? this.#system() : null,
-      addDirs: [GHOST, GHOST_PRIVATE],
+      addDirs: [GHOST, GHOST_PRIVATE, this.inbox],
       onSession: (s) => { t.heads[agent] = s; this.#remember(s); },
     });
     this.procs.set('head', run.child);
@@ -346,16 +404,18 @@ ${list}`;
       t.busy = false;
       this.#changed();
       // More arrived while she was thinking.
-      if (t.messages.some((m) => m.role === 'user' && !m.answered) || t.pending.length) this.#headTurn();
+      if (t.messages.some((m) => m.role === 'user' && !m.answered && !m.hold) || t.pending.length) this.#headTurn();
     });
   }
 
   #reply(raw, lastUser, brain) {
     const t = this.t;
     const m = raw.match(/<jobs>\s*([\s\S]*?)\s*<\/jobs>/i);
-    const text = raw.replace(/<jobs>[\s\S]*?<\/jobs>/gi, '').trim();
+    const am = raw.match(/<attach>\s*([\s\S]*?)\s*<\/attach>/i);
+    const text = raw.replace(/<jobs>[\s\S]*?<\/jobs>/gi, '').replace(/<attach>[\s\S]*?<\/attach>/gi, '').trim();
     const jobs = [];
     const problems = [];
+    const atts = am ? this.#attachments(am[1], problems) : [];
     if (m) {
       let specs = [];
       try { specs = JSON.parse(m[1]); } catch { problems.push('Her jobs block was not valid JSON, so nothing started.'); }
@@ -380,10 +440,137 @@ ${list}`;
       }
     }
     const waiting = jobs.length > 0 && jobs.every((j) => j.status === 'awaiting-approval');
-    this.#post({ role: 'ada', text: text || (waiting ? 'Waiting for your approval.' : jobs.length ? 'On it.' : '…'), jobs: jobs.map((j) => j.id), replyTo: lastUser?.id, ...brain });
+    this.#post({
+      role: 'ada',
+      text: text || (waiting ? 'Waiting for your approval.' : jobs.length ? 'On it.' : atts.length ? 'Here.' : '…'),
+      jobs: jobs.map((j) => j.id), replyTo: lastUser?.id, ...(atts.length ? { atts: atts.map((a) => a.att) } : {}), ...brain,
+    });
+    for (const a of atts) this.#prepareAtt(a.att, a.info, true);
     if (problems.length) this.#post({ role: 'system', text: problems.join('\n') });
     this.#scheduleExpiry();
     this.#pump();
+  }
+
+  // ---- media: files Ada shows, files Nefer uploads ----
+
+  #roots() { return [this.workRoot, this.inbox]; }
+
+  /** Parses an <attach> block into validated { att, info } pairs (at most MAX_ATTACH_PER_REPLY). */
+  #attachments(json, problems) {
+    let specs = [];
+    try { specs = JSON.parse(json); } catch { problems.push('Her attach block was not valid JSON, so nothing was attached.'); return []; }
+    const out = [];
+    const seen = new Set();
+    for (const s of (Array.isArray(specs) ? specs : [specs]).slice(0, MAX_ATTACH_PER_REPLY)) {
+      const info = checkAttachPath(s?.path, this.#roots());
+      if (!info.ok) { problems.push(`Skipped attachment "${clip(String(s?.path || '?'), 80)}": ${info.reason}.`); continue; }
+      const id = cacheKey(info);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({ info, att: { id, kind: info.kind, name: info.name, size: info.size, caption: clip(String(s?.caption || ''), 300), state: 'processing', src: info.real } });
+    }
+    return out;
+  }
+
+  /** Builds the phone-sized copy in the background and updates the attachment when done. */
+  #prepareAtt(att, info, announce = false) {
+    return this.media.prepare(info).then((meta) => {
+      Object.assign(att, { kind: meta.kind, w: meta.w, h: meta.h, dur: meta.dur, thumb: meta.thumb, mime: meta.mime, bytes: meta.bytes, dl: meta.dl, poster: !!meta.poster, state: 'ready' });
+    }).catch((e) => {
+      att.state = 'failed';
+      att.error = clip(e.message, 300);
+      if (announce) this.#post({ role: 'system', text: `Couldn't send "${att.name}": ${att.error}` });
+    }).finally(() => this.#changed());
+  }
+
+  // Phone upload finished (or timed out): post Nefer's message with cards, then let Ada see it once frames are ready.
+  #uploadGroup(g) {
+    const t = this.t;
+    if (g.brain) t.brain = { agent: g.brain.agent === 'codex' ? 'codex' : 'claude', model: String(g.brain.model || '').slice(0, 60) };
+    const items = [];
+    const failed = [...g.failed];
+    for (const f of g.done) {
+      const info = checkAttachPath(f.path, [this.inbox]);
+      if (!info.ok) { failed.push({ name: f.name, reason: info.reason }); continue; }
+      items.push({ info, att: { id: cacheKey(info), kind: info.kind, name: f.name, size: info.size, state: 'processing', src: info.real, up: true } });
+    }
+    if (failed.length) this.#post({ role: 'system', grp: g.id, text: failed.map((x) => `Upload of "${x.name}" failed: ${x.reason}.`).join('\n') });
+    if (!items.length) { this.#changed(); return; }
+    const msg = { id: newId(), t: this.now(), role: 'user', text: String(g.note || '').trim(), atts: items.map((x) => x.att), grp: g.id, brain: { ...t.brain }, hold: true };
+    t.messages.push(msg);
+    if (t.messages.length > 600) t.messages = t.messages.slice(-600);
+    t.updatedAt = this.now();
+    this.#changed();
+    Promise.all(items.map((x) => this.#analyzeUpload(x.att, x.info))).finally(() => {
+      msg.hold = undefined;
+      this.#changed();
+      if (!t.busy) this.#headTurn();
+    });
+  }
+
+  // Previews for the phone run in the background; frames and transcript are what Ada waits for.
+  async #analyzeUpload(att, info) {
+    this.#prepareAtt(att, info);
+    if (att.kind !== 'video') return;
+    const prefix = info.real.replace(/\.[^.\\/]+$/, '');
+    try { att.frames = await this.media.frames(info.real, prefix); } catch { att.frames = []; }
+    try { att.transcript = (await this.transcribe(info.real, `${prefix}.transcript.txt`)) || undefined; } catch { att.transcript = undefined; }
+  }
+
+  #findAtt(id) {
+    for (let i = this.t.messages.length - 1; i >= 0; i--) {
+      const a = this.t.messages[i].atts?.find((x) => x.id === id);
+      if (a) return a;
+    }
+    return null;
+  }
+
+  // Page asks for the bytes of one attachment (or its poster). They go back as sealed chunks.
+  #mediaGet(cmd) {
+    const id = String(cmd.media || '');
+    const part = cmd.part === 'poster' ? 'poster' : 'main';
+    if (!validKey(id)) return 'bad media id';
+    const att = this.#findAtt(id);
+    if (!att || att.state === 'failed') return 'unknown media';
+    const need = Array.isArray(cmd.need) ? cmd.need.filter((i) => Number.isSafeInteger(i) && i >= 0).slice(0, MAX_NEED) : null;
+    const tag = `${id}:${part}`;
+    const started = this.sending.get(tag);
+    if (started && !need && this.now() - started < 60e3) return null; // already on its way
+    if (this.sending.size >= MAX_SENDS) { this.mediaOut({ id, part, err: 'busy: try again in a moment' }).catch(() => {}); return null; }
+    this.sending.set(tag, this.now());
+    this.#serveMedia(att, part, need)
+      .catch((e) => this.mediaOut({ id, part, err: clip(e.message, 200) }).catch(() => {}))
+      .finally(() => this.sending.delete(tag));
+    return null;
+  }
+
+  async #serveMedia(att, part, need) {
+    const out = (o) => this.mediaOut({ id: att.id, part, ...o });
+    let file = this.media.filePath(att.id, part);
+    if (!file) {
+      const meta = this.media.entry(att.id);
+      if (meta && part === 'main' && meta.dl === false) return out({ err: `too large to download (${formatSize(att.size)}; the limit is 8 MB)` });
+      // Cache was pruned: rebuild from the original if it is still where it was and still allowed.
+      const info = att.src ? checkAttachPath(att.src, this.#roots()) : null;
+      if (!info?.ok || cacheKey(info) !== att.id) return out({ err: 'expired' });
+      await this.media.prepare(info);
+      file = this.media.filePath(att.id, part);
+      if (!file) return out({ err: part === 'poster' ? 'no poster' : 'expired' });
+    }
+    this.media.touch(att.id);
+    const size = fs.statSync(file).size;
+    const n = Math.ceil(size / CHUNK);
+    const mime = part === 'poster' ? 'image/jpeg' : (this.media.entry(att.id)?.mime || att.mime || 'application/octet-stream');
+    const want = need ? [...new Set(need)].filter((i) => i < n) : Array.from({ length: n }, (_, i) => i);
+    const fd = fs.openSync(file, 'r');
+    try {
+      for (const i of want) {
+        const len = Math.min(CHUNK, size - i * CHUNK);
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, i * CHUNK);
+        await out({ i, n, size, mime, d: buf.toString('base64') });
+      }
+    } finally { fs.closeSync(fd); }
   }
 
   #checkFolder(f) {
@@ -516,7 +703,22 @@ ${j.prompt}`;
   /** What the page sees. */
   view() {
     const t = this.t;
-    const messages = t.messages.slice(-120).map(({ answered, ...m }) => m);
+    if (this.ffmpegOk === undefined) {
+      this.ffmpegOk = null;
+      this.media.tools?.().then((x) => { this.ffmpegOk = !!x.ffmpeg; }).catch(() => { this.ffmpegOk = false; });
+    }
+    // Thumbnails are small but add up: only the newest few travel in the snapshot.
+    let thumbs = THUMB_KEEP;
+    const messages = t.messages.slice(-120).map(({ answered, hold, ...m }) => m).reverse().map((m) => {
+      if (!m.atts) return m;
+      const atts = m.atts.map(({ src, frames, transcript, up, ...a }) => {
+        // 'expired' once neither the cached copy nor the original is still on disk.
+        if (a.state === 'ready' && !this.media.entry(a.id) && !(src && fs.existsSync(src))) a.state = 'expired';
+        if (a.thumb && thumbs-- <= 0) delete a.thumb;
+        return a;
+      });
+      return { ...m, atts };
+    }).reverse();
     const ids = new Set(messages.flatMap((m) => m.jobs || []));
     const jobs = this.state.jobs
       .filter((j) => ids.has(j.id) || ['running', 'queued', 'awaiting-approval'].includes(j.status))
@@ -532,6 +734,9 @@ ${j.prompt}`;
       memory: fs.existsSync(path.join(GHOST_PRIVATE, 'memory.md')),
       safeMode: true, // the default every job starts in; ops/full are per-job and need approval
       fullModePinSet: this.policy.ready(),
+      // relay: the deployed relay can carry media (else the page hides the paperclip); uploads: progress + missing chunks
+      media: { relay: !!this.relayMedia(), ffmpeg: this.ffmpegOk, maxUpload: UPLOAD.maxBytes, maxFiles: UPLOAD.maxGroup, chunk: 48 * 1024 },
+      uploads: this.uploads.status(),
     };
   }
 }

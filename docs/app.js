@@ -20,7 +20,13 @@ const openProjects = new Set();
 
 /* ---------------- crypto ---------------- */
 const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-const toB64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const toB64 = (buf) => {
+  // Chunked: spreading a whole upload chunk into fromCharCode would overflow the call stack.
+  const u = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode(...u.subarray(i, i + 0x8000));
+  return btoa(bin);
+};
 
 async function keyFor(env) {
   if (keyCache.key && keyCache.salt === env.salt) return keyCache.key;
@@ -117,6 +123,7 @@ function connectRelay() {
   ws.onmessage = async (ev) => {
     try {
       const env = JSON.parse(ev.data);
+      if (env.m === 1) { onMediaChunk(env); return; } // attachment bytes, not a snapshot
       if (!env.ct || env.iv === lastEtag) return;
       data = await decrypt(env);
       lastEtag = env.iv;
@@ -529,6 +536,336 @@ const ICON = {
 };
 const ADA_MARK = '<svg viewBox="0 0 64 64"><path d="M32 6 58 56H6Z" fill="none" stroke="currentColor" stroke-width="5"/><circle cx="32" cy="40" r="6" fill="currentColor"/></svg>';
 
+/* ---------------- attachments: media from Ada, uploads from the phone ---------------- */
+// Bytes arrive as sealed chunks over the relay socket, only when asked for by id. Images load as they
+// scroll into view; video and files load only when tapped. Nothing is stored beyond this page's memory.
+const media = new Map();       // "id" | "id:poster" -> { state, url, mime, n, parts, ... }
+const mediaQueue = [];
+let mediaActive = 0;
+let mediaVer = 0;              // bumps whenever a download changes, so the chat re-renders
+let hint = '';
+let hintTimer = null;
+const MEDIA_CACHE_BYTES = 120 * 1024 * 1024;
+const mKey = (id, part) => (part === 'poster' ? `${id}:poster` : id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const kb = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} MB`);
+
+function flash(msg) {
+  hint = msg;
+  const el = $('#chat-hint');
+  if (el) el.textContent = msg;
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => { hint = ''; chatKey = ''; if (data) renderChat(); }, 5000);
+}
+
+function mediaChanged() { mediaVer++; chatKey = ''; if (data) renderChat(); }
+
+function fetchMedia(id, part = 'main') {
+  const k = mKey(id, part);
+  let m = media.get(k);
+  if (m?.state === 'ready') return Promise.resolve(m);
+  if (m?.promise && m.state !== 'error') return m.promise;
+  m = { id, part, state: 'queued', n: 0, parts: new Map(), tries: 0, last: Date.now(), size: 0, mime: '' };
+  media.set(k, m);
+  m.promise = new Promise((res, rej) => { m.res = res; m.rej = rej; });
+  m.promise.catch(() => {});
+  mediaQueue.push(m);
+  pumpMedia();
+  return m.promise;
+}
+
+function retryMedia(id, part) {
+  const m = media.get(mKey(id, part === 'poster' ? 'poster' : 'main'));
+  if (m?.state === 'error') media.delete(mKey(id, part === 'poster' ? 'poster' : 'main'));
+  fetchMedia(id, part === 'poster' ? 'poster' : 'main');
+  mediaChanged();
+}
+
+function pumpMedia() {
+  while (mediaActive < 2 && mediaQueue.length) startMedia(mediaQueue.shift());
+}
+
+async function requestMedia(m, need) {
+  await sendCmd({ type: 'media-get', id: rid(), media: m.id, ...(m.part === 'poster' ? { part: 'poster' } : {}), ...(need ? { need } : {}) });
+}
+
+async function startMedia(m) {
+  mediaActive++;
+  m.state = 'loading';
+  m.last = Date.now();
+  try { await requestMedia(m); } catch (e) { return endMedia(m, 'error', 'not connected'); }
+  // No progress for 10 s: ask again for just the missing chunks, three times at most.
+  m.timer = setInterval(async () => {
+    if (Date.now() - m.last < 10000) return;
+    if (m.tries >= 3) return endMedia(m, 'error', 'timed out');
+    m.tries++;
+    m.last = Date.now();
+    const need = [];
+    for (let i = 0; i < m.n && need.length < 800; i++) if (!m.parts.has(i)) need.push(i);
+    try { await requestMedia(m, m.n ? need : undefined); } catch { endMedia(m, 'error', 'not connected'); }
+  }, 2000);
+}
+
+function endMedia(m, state, err = '') {
+  if (m.state !== 'loading' && m.state !== 'queued') return;
+  clearInterval(m.timer);
+  m.state = state;
+  m.err = err;
+  m.parts = null;
+  mediaActive = Math.max(0, mediaActive - 1);
+  if (state === 'error') m.rej(new Error(err)); else m.res(m);
+  pumpMedia();
+  evictMedia();
+  mediaChanged();
+}
+
+async function onMediaChunk(env) {
+  let o;
+  try { o = await decrypt(env); } catch { return; }
+  const m = media.get(mKey(o.id, o.part === 'poster' ? 'poster' : 'main'));
+  if (!m || m.state !== 'loading') return;
+  if (o.err) return endMedia(m, 'error', String(o.err));
+  m.n = o.n; m.size = o.size; m.mime = o.mime; m.last = Date.now();
+  if (!m.parts.has(o.i)) m.parts.set(o.i, b64(o.d));
+  m.onprogress?.(m.parts.size, m.n);
+  if (m.parts.size < m.n) return;
+  const blob = new Blob([...Array(m.n).keys()].map((i) => m.parts.get(i)), { type: m.mime });
+  m.url = URL.createObjectURL(blob);
+  m.bytes = blob.size;
+  endMedia(m, 'ready');
+}
+
+// Keep the in-memory copies bounded; the oldest finished ones go first (they reload on demand).
+function evictMedia() {
+  const ready = [...media.entries()].filter(([, m]) => m.state === 'ready');
+  let total = ready.reduce((s, [, m]) => s + (m.bytes || 0), 0);
+  for (const [k, m] of ready) {
+    if (total <= MEDIA_CACHE_BYTES) break;
+    if (m === viewing) continue;
+    URL.revokeObjectURL(m.url);
+    total -= m.bytes || 0;
+    media.delete(k);
+  }
+}
+
+let lazyObserver = null;
+function observeLazy() {
+  const els = document.querySelectorAll('#chat-log [data-lazy]');
+  if (!els.length) return;
+  lazyObserver ||= new IntersectionObserver((entries) => {
+    for (const en of entries) {
+      if (!en.isIntersecting) continue;
+      lazyObserver.unobserve(en.target);
+      const [id, part] = en.target.dataset.lazy.split(':');
+      const m = media.get(mKey(id, part === 'poster' ? 'poster' : 'main'));
+      if (!m || m.state === 'queued') fetchMedia(id, part === 'poster' ? 'poster' : 'main').catch(() => {});
+    }
+  }, { rootMargin: '240px' });
+  els.forEach((el) => {
+    const [id, part] = el.dataset.lazy.split(':');
+    if (media.get(mKey(id, part === 'poster' ? 'poster' : 'main'))?.state === 'error') return; // tap to retry
+    lazyObserver.observe(el);
+  });
+}
+
+const PLAY = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+const clock = (s) => { s = Math.round(s || 0); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+
+function attHtml(a) {
+  const cap = a.caption ? `<div class="att-cap">${esc(a.caption)}</div>` : '';
+  const note = (txt, state) => `<div class="att" data-state="${state}"><div class="att-note">${txt}</div></div>`;
+  if (a.state === 'processing') return note(`${ICON.spin} Preparing ${esc(a.name)}…`, 'processing');
+  if (a.state === 'failed') return note(`${esc(a.name)} could not be sent: ${esc(a.error || 'failed')}`, 'failed');
+  if (a.state === 'expired') return note(`${esc(a.name)} · expired, no longer on the laptop`, 'expired');
+  if (a.kind === 'image' || a.kind === 'video') {
+    const part = a.kind === 'video' ? 'poster' : 'main';
+    const m = media.get(mKey(a.id, part));
+    const wantPic = a.kind === 'image' || a.poster;
+    let pic;
+    if (m?.state === 'ready') pic = `<img src="${m.url}" alt="${esc(a.name)}">`;
+    else if (a.thumb) pic = `<img class="blur" ${wantPic && m?.state !== 'error' ? `data-lazy="${a.id}${part === 'poster' ? ':poster' : ''}"` : ''} src="${a.thumb}" alt="" ${a.w && a.h ? `style="aspect-ratio:${a.w}/${a.h}"` : ''}>`;
+    else pic = `<div class="ph" ${wantPic ? `data-lazy="${a.id}${part === 'poster' ? ':poster' : ''}"` : ''}>${m?.state === 'error' ? `tap to retry · ${esc(m.err)}` : esc(a.name)}</div>`;
+    const play = a.kind === 'video' ? `<span class="att-play"><i>${PLAY}</i></span>${a.dur ? `<span class="att-dur">${clock(a.dur)}</span>` : ''}` : '';
+    return `<div class="att wide" data-kind="${a.kind}"><button type="button" class="att-pic" data-open="${a.id}" aria-label="${a.kind === 'video' ? 'Play' : 'Open'} ${esc(a.name)}">${pic}${play}</button>${cap}</div>`;
+  }
+  const ext = (a.name.split('.').pop() || 'file').slice(0, 4);
+  const dl = a.dl !== false;
+  return `<div class="att"><button type="button" class="att-file" ${dl ? `data-open="${a.id}"` : 'disabled'}><span class="ext">${esc(ext)}</span><span><b>${esc(a.name)}</b><small>${kb(a.size)}${dl ? ' · tap to download' : ' · too large to download here'}</small></span></button>${cap}</div>`;
+}
+
+const attsHtml = (m) => (m.atts?.length ? `<div class="atts">${m.atts.map(attHtml).join('')}</div>` : '');
+
+/* ---- full-screen viewer ---- */
+let viewing = null;
+const findAtt = (id) => {
+  for (const m of data?.chat?.thread?.messages || []) { const a = m.atts?.find((x) => x.id === id); if (a) return a; }
+  return null;
+};
+
+function closeViewer() {
+  const v = $('#viewer');
+  v.querySelector('video')?.pause();
+  if (viewing) viewing.onprogress = null;
+  viewing = null;
+  v.hidden = true;
+  $('#viewer-body').innerHTML = '';
+}
+
+function openViewer(id) {
+  const a = findAtt(id);
+  if (!a) return;
+  const body = $('#viewer-body');
+  $('#viewer-cap').textContent = [a.name, a.caption].filter(Boolean).join(' — ');
+  $('#viewer').hidden = false;
+  const say = (html) => { body.innerHTML = `<div class="vmsg">${html}</div>`; };
+  const show = (m) => {
+    if (a.kind === 'image') body.innerHTML = `<img src="${m.url}" alt="${esc(a.name)}">`;
+    else if (a.kind === 'video') body.innerHTML = `<video src="${m.url}" controls playsinline autoplay></video>`;
+    else body.innerHTML = `<div class="vmsg"><a href="${m.url}" download="${esc(a.name)}" style="color:var(--text)">Save ${esc(a.name)}</a>${/pdf|text/.test(m.mime) ? ` · <a href="${m.url}" target="_blank" rel="noopener" style="color:var(--text)">Open</a>` : ''}</div>`;
+    if (a.kind === 'file') { const l = document.createElement('a'); l.href = m.url; l.download = a.name; l.click(); }
+  };
+  const have = media.get(mKey(id, 'main'));
+  if (have?.state === 'ready') { viewing = have; return show(have); }
+  const poster = a.kind === 'video' && media.get(mKey(id, 'poster'))?.url;
+  say(`${poster ? `<img src="${poster}" alt="" style="max-height:50vh;opacity:.6;display:block;margin:0 auto 14px">` : ''}${ICON.spin} Loading ${esc(a.name)}…`);
+  const p = fetchMedia(id, 'main');
+  const m = media.get(mKey(id, 'main'));
+  viewing = m;
+  m.onprogress = (got, n) => { if (viewing === m) { const el = body.querySelector('.vmsg'); if (el) el.lastChild.textContent = ` Loading ${a.name}… ${Math.round((got / n) * 100)}%`; } };
+  p.then((r) => { if (viewing === m) show(r); }).catch((e) => { if (viewing === m) say(`Couldn’t load ${esc(a.name)}: ${esc(e.message)}<br><br><button type="button" class="link" id="viewer-retry">Try again</button>`); });
+}
+
+/* ---- uploads from the phone ---- */
+const ALLOWED_UPLOAD = /\.(png|jpe?g|webp|gif|mp4|webm|mov|pdf|txt|md|json|csv)$/i;
+const staged = [];            // { key, file, name, size, kind, url, state: ready | sending | sent | failed, sent, n, err, up }
+let group = null;             // the batch being sent: { grp, files, note }
+let lastChunkAt = 0;
+const CHUNK_GAP_MS = 260;     // ~230 chunks/min: stays under the relay's per-socket upload budget
+
+const groupBusy = () => !!group && staged.some((f) => f.state === 'sending');
+const kindOfFile = (f) => (/^image\//.test(f.type) || /\.(png|jpe?g|webp|gif)$/i.test(f.name) ? 'image' : /^video\//.test(f.type) || /\.(mp4|webm|mov)$/i.test(f.name) ? 'video' : 'file');
+
+function addFiles(list) {
+  const cfg = data?.chat?.media || {};
+  const maxBytes = cfg.maxUpload || 25 * 1048576;
+  const maxFiles = cfg.maxFiles || 10;
+  const problems = [];
+  for (const file of list) {
+    if (staged.length >= maxFiles) { problems.push(`at most ${maxFiles} files at once`); break; }
+    if (/\.hei[cf]$/i.test(file.name)) { problems.push(`${file.name}: HEIC isn’t supported (set the camera to Most Compatible)`); continue; }
+    if (!ALLOWED_UPLOAD.test(file.name)) { problems.push(`${file.name}: type not allowed`); continue; }
+    if (file.size > maxBytes) { problems.push(`${file.name}: over ${kb(maxBytes)}`); continue; }
+    if (!file.size) { problems.push(`${file.name}: empty`); continue; }
+    const kind = kindOfFile(file);
+    staged.push({ key: rid(), file, name: file.name, size: file.size, kind, url: kind === 'file' ? '' : URL.createObjectURL(file), state: 'ready', sent: 0, n: 0, err: '', up: '' });
+  }
+  if (problems.length) flash(problems.join(' · '));
+  renderStaged();
+}
+
+function removeStaged(key) {
+  const i = staged.findIndex((f) => f.key === key);
+  if (i < 0 || staged[i].state === 'sending') return;
+  if (staged[i].url) URL.revokeObjectURL(staged[i].url);
+  staged.splice(i, 1);
+  renderStaged();
+}
+
+function clearStaged() {
+  for (const f of staged) if (f.url) URL.revokeObjectURL(f.url);
+  staged.length = 0;
+  group = null;
+  renderStaged();
+}
+
+function renderStaged() {
+  const box = $('#staged');
+  box.hidden = !staged.length;
+  box.innerHTML = staged.map((f) => {
+    const pic = f.kind === 'image' ? `<img src="${f.url}" alt="">` : f.kind === 'video' ? `<video src="${f.url}#t=0.1" preload="metadata" muted playsinline></video>` : esc((f.name.split('.').pop() || 'file').slice(0, 4).toUpperCase());
+    const pct = f.state === 'sent' ? 100 : f.n ? Math.round((f.sent / f.n) * 100) : 0;
+    return `<div class="stg ${f.state === 'failed' ? 'bad' : ''}" data-key="${f.key}">
+      <div class="stg-pic">${pic}</div><div class="stg-name">${esc(f.name)}</div>
+      ${f.state === 'sending' || f.state === 'sent' ? `<div class="stg-bar"><i style="width:${pct}%"></i></div>` : ''}
+      ${f.state === 'failed' ? `<div class="stg-err">${esc(f.err || 'failed')}</div>` : ''}
+      ${f.state === 'sending' ? '' : `<button type="button" class="stg-x" data-rm="${f.key}" aria-label="Remove ${esc(f.name)}">×</button>`}
+    </div>`;
+  }).join('');
+  const send = $('#chat-send');
+  if (send) send.classList.toggle('stop', !!data?.chat?.thread?.busy && !$('#chat-input').value.trim() && !staged.length);
+}
+
+function setProgress(f) {
+  const bar = document.querySelector(`.stg[data-key="${f.key}"] .stg-bar i`);
+  if (bar) bar.style.width = `${Math.round((f.sent / f.n) * 100)}%`;
+}
+
+async function waitSend() {
+  for (;;) {
+    if (!wsLive || !ws || ws.readyState !== 1) throw new Error('not connected');
+    const gap = lastChunkAt + CHUNK_GAP_MS - Date.now();
+    if (ws.bufferedAmount < 600000 && gap <= 0) break;
+    await sleep(Math.max(20, gap));
+  }
+  lastChunkAt = Date.now();
+}
+
+async function uploadFile(f, g, note) {
+  const cs = data?.chat?.media?.chunk || 48 * 1024;
+  f.n = Math.ceil(f.size / cs);
+  const head = { up: f.up, grp: g.grp, gn: g.files.length, n: f.n, cs, size: f.size, name: f.name, mime: f.file.type || '' };
+  const sendChunk = async (i) => {
+    const buf = await f.file.slice(i * cs, Math.min(f.size, (i + 1) * cs)).arrayBuffer();
+    await waitSend();
+    await sendCmd({ type: 'upload-chunk', id: rid(), ...head, i, d: toB64(buf), ...(i === 0 ? { note, brain: { ...brainPref } } : {}) }, true);
+  };
+  for (let i = 0; i < f.n; i++) { await sendChunk(i); f.sent = i + 1; setProgress(f); }
+  // The laptop reports what it holds in the next snapshots; resend anything it is missing.
+  for (let round = 0; round < 5; round++) {
+    await sleep(4000);
+    const st = data?.chat?.uploads?.find((u) => u.id === f.up);
+    if (data?.chat?.thread?.messages.some((m) => m.grp === g.grp) || st?.state === 'done') { f.state = 'sent'; return; }
+    if (st?.state === 'failed') throw new Error(st.reason || 'refused');
+    if (st?.state === 'receiving') for (const i of st.miss || []) await sendChunk(i);
+    else if (!st && round >= 1) for (let i = 0; i < f.n; i++) await sendChunk(i);
+  }
+  throw new Error('the laptop never confirmed');
+}
+
+async function startUploads(note) {
+  const files = staged.filter((f) => f.state === 'ready');
+  if (!files.length) return;
+  const g = { grp: rid(), files, note };
+  group = g;
+  for (const f of files) { f.up = rid(); f.state = 'sending'; f.sent = 0; f.err = ''; }
+  renderStaged();
+  chatKey = ''; if (data) renderChat();
+  for (const [idx, f] of files.entries()) {
+    try { await uploadFile(f, g, idx === 0 ? note : ''); }
+    catch (e) { f.state = 'failed'; f.err = e.message; }
+    renderStaged();
+  }
+}
+
+// Once the laptop has posted the message for this batch, the staged chips have done their job.
+function watchUploadedGroup(t) {
+  if (group && t.messages.some((m) => m.grp === group.grp)) clearStaged();
+}
+
+function bindAttach() {
+  const input = $('#file-input');
+  $('#attach-btn').addEventListener('click', () => { if (!$('#attach-btn').disabled) input.click(); });
+  input.addEventListener('change', () => { addFiles([...input.files]); input.value = ''; });
+  $('#staged').addEventListener('click', (e) => { const x = e.target.closest('[data-rm]'); if (x) removeStaged(x.dataset.rm); });
+  $('#viewer-close').addEventListener('click', closeViewer);
+  $('#viewer').addEventListener('click', (e) => {
+    if (e.target.id === 'viewer-retry') { const id = findAttByViewer(); if (id) { retryMedia(id, 'main'); openViewer(id); } return; }
+    if (e.target.id === 'viewer' || e.target.id === 'viewer-body') closeViewer();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#viewer').hidden) closeViewer(); });
+}
+const findAttByViewer = () => viewing?.id || null;
+
 // Minimal Markdown: fences, headings, lists, paragraphs; inline code/bold/italic/links.
 // Everything is escaped first, so model output can't inject markup.
 function md(src) {
@@ -714,7 +1051,7 @@ function renderChat() {
   const jobs = new Map((chat.jobs || []).map((j) => [j.id, j]));
   const busy = !!t.busy;
 
-  const key = JSON.stringify([t, pending, chat.jobs, chat.fullModePinSet, brainPref, wsLive]);
+  const key = JSON.stringify([t, pending, chat.jobs, chat.fullModePinSet, brainPref, wsLive, mediaVer, chat.media]);
   if (key === chatKey) return;
   chatKey = key;
 
@@ -745,10 +1082,10 @@ function renderChat() {
   const olderPending = (chat.jobs || []).filter((j) => j.status === 'awaiting-approval' && !visibleJobIds.has(j.id));
   if (olderPending.length) rows.push(`<li class="msg ada"><h3 class="sec">Awaiting your approval</h3><div class="tools">${olderPending.map(jobCard).join('')}</div></li>`);
   for (const m of t.messages) {
-    if (m.role === 'user') rows.push(`<li class="msg me"><div class="bubble">${esc(m.text)}</div></li>`);
+    if (m.role === 'user') rows.push(`<li class="msg me">${m.text ? `<div class="bubble">${esc(m.text)}</div>` : ''}${attsHtml(m)}</li>`);
     else if (m.role === 'ada') {
       const cards = (m.jobs || []).map((id) => jobCard(jobs.get(id))).join('');
-      rows.push(`<li class="msg ada">${adaHead(m.t, m)}<div class="md">${md(m.text)}</div>${cards ? `<div class="tools">${cards}</div>` : ''}</li>`);
+      rows.push(`<li class="msg ada">${adaHead(m.t, m)}<div class="md">${md(m.text)}</div>${attsHtml(m)}${cards ? `<div class="tools">${cards}</div>` : ''}</li>`);
     } else if (m.reset) rows.push(`<li class="divider"><span>Fresh context</span></li>`);
     else if (m.role === 'system') rows.push(`<li class="msg sys">${esc(m.text)}</li>`);
   }
@@ -762,19 +1099,24 @@ function renderChat() {
 
   // Send turns into stop while Ada is thinking (until you type something to queue).
   const send = $('#chat-send');
-  const stopMode = busy && !$('#chat-input').value.trim();
+  const stopMode = busy && !$('#chat-input').value.trim() && !staged.length;
   send.classList.toggle('stop', stopMode);
   send.setAttribute('aria-label', stopMode ? 'Stop' : 'Send');
   send.disabled = !wsLive;
-  $('#chat-hint').textContent = wsLive ? '' : 'Laptop not connected';
+  $('#chat-hint').textContent = hint || (!wsLive ? 'Laptop not connected' : chat.media && !chat.media.relay ? 'Files need the relay update' : '');
+  $('#attach-btn').disabled = !wsLive || !chat.media?.relay;
+  watchUploadedGroup(t);
+  observeLazy();
   $('#chat-reset').disabled = busy;
   if (nearBottom || pending.length) requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight }));
 }
 
-async function sendCmd(cmd) {
+async function sendCmd(cmd, upload = false) {
   if (!wsLive || !ws || ws.readyState !== 1) throw new Error('not connected');
   if (!keyCache.key) throw new Error('locked');
-  ws.send(JSON.stringify(await seal({ kind: 'cmd', ts: Date.now(), ...cmd })));
+  const env = await seal({ kind: 'cmd', ts: Date.now(), ...cmd });
+  // {"up":1, marks an upload chunk so the relay gives it the bigger size and its own rate budget.
+  ws.send(JSON.stringify(upload ? { up: 1, ...env } : env));
 }
 
 async function sendChat(text, cid = rid()) {
@@ -872,6 +1214,13 @@ function bindChat() {
   $('#composer').addEventListener('submit', (e) => {
     e.preventDefault();
     const text = input.value.trim();
+    if (staged.some((f) => f.state === 'ready') && !groupBusy()) {
+      if (!wsLive) return;
+      input.value = '';
+      startUploads(text);
+      grow();
+      return;
+    }
     if (!text) {
       if (data?.chat?.thread?.busy) sendCmd({ type: 'stop', id: rid() }).catch(() => {});
       return;
@@ -881,6 +1230,7 @@ function bindChat() {
     sendChat(text);
     grow();
   });
+  bindAttach();
   $('#chat-menu').addEventListener('click', () => setSheet('#chat-sheet', true));
   $('#brain-btn').addEventListener('click', () => setSheet('#brain-sheet', true));
   document.querySelectorAll('.sheet').forEach((s) => s.addEventListener('click', (e) => { if (e.target === s || e.target.closest('[data-close]')) setSheet(`#${s.id}`, false); }));
@@ -922,6 +1272,10 @@ function bindChat() {
   });
   $('#chat-log').addEventListener('click', (e) => {
     if (jobActionClick(e)) return;
+    const op = e.target.closest('[data-open]');
+    if (op) { openViewer(op.dataset.open); return; }
+    const lz = e.target.closest('[data-lazy]');
+    if (lz) { const [id, part] = lz.dataset.lazy.split(':'); retryMedia(id, part); }
     const sg = e.target.closest('[data-suggest]');
     if (sg) { input.value = sg.dataset.suggest; grow(); input.focus(); return; }
     const c = e.target.closest('[data-cancel]');

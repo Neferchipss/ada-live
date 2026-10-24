@@ -442,3 +442,50 @@ body.sheet-open { overflow: hidden; }
 .act-row[data-kind='tool'] .ar-text { font: 12.5px var(--mono); color: var(--muted); }
 .act-row[data-kind='prompt'] .ar-text { color: var(--text); }
 .act-row.err .ar-text { color: var(--amber); }
+
+/* Attachments: paperclip, staged files, media in bubbles, full-screen viewer */
+.attach-btn { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line) !important; background: var(--bg-2) !important; display: grid; place-items: center; flex: none; cursor: pointer; }
+.attach-btn svg { width: 17px; height: 17px; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.attach-btn:disabled { opacity: 0.4; cursor: default; }
+.staged { display: flex; gap: 8px; overflow-x: auto; padding: 0 0 10px; margin-right: 4px; }
+.staged[hidden] { display: none; }
+.stg { position: relative; flex: none; width: 76px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); overflow: hidden; }
+.stg .stg-pic { width: 76px; height: 62px; display: grid; place-items: center; background: var(--bg); color: var(--dim); font: 600 11px var(--mono); }
+.stg .stg-pic img, .stg .stg-pic video { width: 100%; height: 100%; object-fit: cover; }
+.stg .stg-name { padding: 3px 6px 4px; font: 10.5px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stg .stg-x { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(0, 0, 0, 0.65); color: var(--text); font: 14px/1 var(--sans); display: grid; place-items: center; cursor: pointer; padding: 0; }
+.stg .stg-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--line); }
+.stg .stg-bar i { display: block; height: 100%; width: 0; background: var(--codex); transition: width 0.2s; }
+.stg.bad { border-color: rgba(240, 164, 58, 0.7); }
+.stg .stg-err { position: absolute; inset: 0 0 18px; background: rgba(11, 10, 12, 0.82); color: var(--amber); font: 10px/1.25 var(--mono); padding: 5px; overflow: hidden; }
+
+.atts { display: grid; gap: 6px; margin-top: 6px; }
+.msg.me .atts { justify-items: end; }
+.msg.ada > .atts { padding-left: 30px; justify-items: start; }
+.att { position: relative; max-width: min(78vw, 360px); border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: var(--card); }
+.att-pic { display: block; border: 0; padding: 0; background: var(--bg); position: relative; cursor: zoom-in; width: 100%; color: inherit; }
+.att-pic img { display: block; width: 100%; height: auto; max-height: 420px; object-fit: contain; }
+.att-pic img.blur { filter: blur(6px); transform: scale(1.04); }
+.att-pic .ph { aspect-ratio: 4 / 3; width: min(78vw, 280px); display: grid; place-items: center; color: var(--dim); font: 11px var(--mono); }
+.att-play { position: absolute; inset: 0; display: grid; place-items: center; }
+.att-play i { width: 52px; height: 52px; border-radius: 50%; background: rgba(0, 0, 0, 0.6); border: 2px solid rgba(255, 255, 255, 0.85); display: grid; place-items: center; }
+.att-play svg { width: 22px; height: 22px; fill: #fff; margin-left: 3px; }
+.att-dur { position: absolute; right: 8px; bottom: 8px; font: 11px var(--mono); background: rgba(0, 0, 0, 0.65); border-radius: 6px; padding: 1px 6px; }
+.att-cap { padding: 6px 10px 8px; font-size: 13px; color: var(--muted); }
+.att-file { display: flex; align-items: center; gap: 10px; padding: 10px 12px; width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.att-file .ext { flex: none; width: 38px; height: 44px; border-radius: 8px; border: 1px solid var(--line); display: grid; place-items: center; font: 600 10.5px var(--mono); color: var(--muted); text-transform: uppercase; }
+.att-file b { display: block; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.att-file small { font: 11px var(--mono); color: var(--dim); }
+.att-note { padding: 10px 12px; font: 12px/1.4 var(--mono); color: var(--dim); }
+.att[data-state='failed'] .att-note { color: var(--amber); }
+.att .spin { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.4; vertical-align: -3px; }
+
+.viewer { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.94); display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.viewer[hidden] { display: none; }
+.viewer-body { flex: 1; min-height: 0; width: 100%; display: grid; place-items: center; overflow: auto; padding: calc(56px + env(safe-area-inset-top, 0px)) 8px 8px; }
+.viewer-body img, .viewer-body video { max-width: 100%; max-height: 100%; object-fit: contain; }
+.viewer-body .vmsg { font: 13px var(--mono); color: var(--muted); text-align: center; padding: 24px; }
+.viewer-cap { padding: 8px 16px calc(14px + var(--safe-b)); font-size: 13.5px; color: var(--muted); text-align: center; max-width: 560px; }
+.viewer-cap:empty { display: none; }
+.viewer-close { position: absolute; top: calc(10px + env(safe-area-inset-top, 0px)); right: 12px; width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line); background: rgba(24, 22, 27, 0.9); display: grid; place-items: center; cursor: pointer; z-index: 2; }
+.viewer-close svg { width: 20px; height: 20px; fill: none; stroke: var(--text); stroke-width: 2.4; stroke-linecap: round; }

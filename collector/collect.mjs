@@ -157,6 +157,7 @@ function onCommand(env) {
   let cmd;
   try { cmd = open(env, key); } catch { console.log('[chat] dropped a message that was not sealed with the password'); return; }
   const why = hub.handle(cmd);
+  if (cmd.type === 'upload-chunk' && !why) return; // hundreds per file: only log refusals
   console.log(`[chat] ${cmd.type || '?'}${why ? ` rejected: ${why}` : ''}`);
 }
 
@@ -187,7 +188,12 @@ if (once) {
   process.exit(0);
 } else {
   stats = new Stats();
-  hub = new ChatHub({ workRoot: cfg.workRoot, projects: () => work.list(), onChange: pushSoon });
+  hub = new ChatHub({
+    workRoot: cfg.workRoot, projects: () => work.list(), onChange: pushSoon,
+    // Media chunks are sealed like everything else; the leading "m":1 lets the relay pass them on without storing them as a snapshot.
+    mediaOut: (obj) => relay?.sendMedia(JSON.stringify({ m: 1, ...seal(obj, key, cfg.salt) })),
+    relayMedia: () => relay?.mediaOk,
+  });
   if (cfg.relayUrl && cfg.relayKey) {
     relay = new RelayClient(cfg.relayUrl, cfg.relayKey, (n) => { if (n > 0 && !streaming) streamLoop(); }, onCommand);
   }

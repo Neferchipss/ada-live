@@ -4,12 +4,23 @@
 //   wss://<worker>/ws?role=viewer              phone/browser: receives snapshots; may send encrypted chat
 //                                              commands, passed to the laptop unread (it checks them)
 //   wss://<worker>/ws?role=pub&key=<PUB_KEY>   the laptop collector: sends snapshots, hears viewer count
+//
+// Media (images, video, uploads) rides the same sockets as small sealed chunks:
+//   laptop -> viewers: messages starting {"m":1, are media chunks. Passed on, never stored as the snapshot.
+//   viewer -> laptop:  messages starting {"up":1, are upload chunks: bigger and budgeted separately.
+// The relay still reads nothing inside them. The laptop learns the relay can do this from caps:["media"].
 import { DurableObject } from 'cloudflare:workers';
 
 const PERSIST_EVERY_MS = 20_000;
 const MAX_MESSAGE = 512 * 1024;
 const MAX_COMMAND = 32 * 1024;
 const COMMANDS_PER_MIN = 30;
+const MEDIA_PREFIX = '{"m":1,';
+const UPLOAD_PREFIX = '{"up":1,';
+const MAX_MEDIA = 192 * 1024;
+const MAX_UPLOAD_CHUNK = 128 * 1024;
+const UPLOAD_CHUNKS_PER_MIN = 240;      // ~11 MB/min of 48 KB chunks, per viewer socket
+const CAPS = ['media'];
 
 export class Relay extends DurableObject {
   constructor(ctx, env) {
@@ -34,7 +45,7 @@ export class Relay extends DurableObject {
       if (last) server.send(last);
       this.#announce();
     } else {
-      server.send(JSON.stringify({ type: 'viewers', n: this.#viewers() }));
+      server.send(JSON.stringify({ type: 'viewers', n: this.#viewers(), caps: CAPS }));
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -43,6 +54,14 @@ export class Relay extends DurableObject {
     const [role] = this.ctx.getTags(ws);
     if (role === 'viewer') return this.#forward(ws, message);
     if (typeof message !== 'string' || message.length > MAX_MESSAGE) return;
+    if (message.startsWith(MEDIA_PREFIX)) {
+      // A media chunk: relay it to the viewers, but never keep it as "the latest snapshot".
+      if (message.length > MAX_MEDIA) return;
+      for (const v of this.ctx.getWebSockets('viewer')) {
+        try { v.send(message); } catch { /* closing */ }
+      }
+      return;
+    }
     this.last = message;
     for (const v of this.ctx.getWebSockets('viewer')) {
       try { v.send(message); } catch { /* closing */ }
@@ -66,11 +85,14 @@ export class Relay extends DurableObject {
 
   // Viewer -> laptop. The relay can't read these; the laptop drops anything not sealed with the password.
   #forward(ws, message) {
-    if (typeof message !== 'string' || message.length > MAX_COMMAND) return;
+    if (typeof message !== 'string') return;
+    const upload = message.startsWith(UPLOAD_PREFIX);
+    if (message.length > (upload ? MAX_UPLOAD_CHUNK : MAX_COMMAND)) return;
     const now = Date.now();
-    const a = ws.deserializeAttachment() || { start: now, n: 0 };
-    if (now - a.start > 60_000) { a.start = now; a.n = 0; }
-    if (++a.n > COMMANDS_PER_MIN) return;
+    const a = ws.deserializeAttachment() || { start: now, n: 0, u: 0 };
+    if (now - a.start > 60_000) { a.start = now; a.n = 0; a.u = 0; }
+    a.u ||= 0; // sockets that connected before this version stored no upload count
+    if (upload ? ++a.u > UPLOAD_CHUNKS_PER_MIN : ++a.n > COMMANDS_PER_MIN) return;
     ws.serializeAttachment(a);
     for (const p of this.ctx.getWebSockets('pub')) {
       try { p.send(message); } catch {}
@@ -83,7 +105,7 @@ export class Relay extends DurableObject {
 
   // Tell the laptop how many viewers are watching, so it only streams when someone is.
   #announce(except) {
-    const msg = JSON.stringify({ type: 'viewers', n: this.#viewers(except) });
+    const msg = JSON.stringify({ type: 'viewers', n: this.#viewers(except), caps: CAPS });
     for (const p of this.ctx.getWebSockets('pub')) {
       try { p.send(msg); } catch {}
     }
