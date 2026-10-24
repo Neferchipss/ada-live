@@ -54,6 +54,25 @@ export function locate(projects, workRoot, cwd) {
 
 export const placeLabel = (loc) => (loc ? `${loc.project}${loc.sub ? ` › ${loc.sub}` : ''}` : '');
 
+
+const ADA_PROMPT = /^\s*Job from Ada\b/i;
+const START_SLOP_MS = 2 * 60e3;
+
+/**
+ * Is this external session really one of Ada's own workers? True when its id is in `own`, its first prompt
+ * is the "Job from Ada" preamble, or it sits in the folder of a running Ada job and began around when that job did.
+ * A belt-and-braces check: the session id is not always known yet when a job has just started.
+ */
+export function isAdaSession(s, { own = new Set(), jobs = [] } = {}) {
+  if (own.has(s.id)) return true;
+  if ([s.firstPrompt, s.lastPrompt, s.title].some((t) => ADA_PROMPT.test(t || ''))) return true;
+  if (!s.cwd) return false;
+  const c = normPath(s.cwd);
+  return jobs.some((j) => j.status === 'running' && j.mode !== 'ops' && j.folder && normPath(j.folder) === c
+    && Number.isFinite(s.startedAt) && s.startedAt > 0 && Number.isFinite(j.startedAt)
+    && s.startedAt >= j.startedAt - START_SLOP_MS && s.startedAt <= j.startedAt + START_SLOP_MS);
+}
+
 /**
  * Everything that is active, grouped per project folder.
  * sessions: claude.mjs/codex.mjs sessions; jobs: ChatHub jobs; tasks: collectTasks(); own: ids Ada started herself.
@@ -77,7 +96,7 @@ export function activeMap({ projects = [], workRoot = '', sessions = [], jobs = 
     });
   }
   for (const s of sessions) {
-    if (!s.cwd || own.has(s.id) || !sessionActive(s, now)) continue;
+    if (!s.cwd || isAdaSession(s, { own, jobs }) || !sessionActive(s, now)) continue;
     add(s.cwd, { source: 'terminal', id: s.id, agent: s.agent, mode: '', title: clip(s.title, 80), since: s.lastActivity || now, status: s.status });
   }
   for (const k of tasks) {
@@ -92,7 +111,7 @@ export function activeMap({ projects = [], workRoot = '', sessions = [], jobs = 
  * A session sitting at the Work root itself (or above) is not counted: it would block every job.
  * Returns the reason Ada shows ("Claude session active in babajee › src") or null.
  */
-export function findConflict(folder, { projects = [], workRoot = '', sessions = [], tasks = [], own = new Set(), now = Date.now() } = {}) {
+export function findConflict(folder, { projects = [], workRoot = '', sessions = [], jobs = [], tasks = [], own = new Set(), now = Date.now() } = {}) {
   const f = normPath(folder), root = normPath(workRoot);
   const hit = (cwd) => {
     const c = normPath(cwd);
@@ -101,7 +120,7 @@ export function findConflict(folder, { projects = [], workRoot = '', sessions = 
   };
   const where = (cwd) => placeLabel(locate(projects, workRoot, cwd)) || path.basename(cwd);
   for (const s of sessions) {
-    if (s.cwd && !own.has(s.id) && sessionActive(s, now) && hit(s.cwd)) return `${AGENT[s.agent] || 'Agent'} session active in ${where(s.cwd)}`;
+    if (s.cwd && !isAdaSession(s, { own, jobs }) && sessionActive(s, now) && hit(s.cwd)) return `${AGENT[s.agent] || 'Agent'} session active in ${where(s.cwd)}`;
   }
   for (const k of tasks) {
     if (k.cwd && taskActive(k, now) && hit(k.cwd)) return `Task "${clip(k.title, 40)}" active in ${where(k.cwd)}`;
@@ -114,7 +133,7 @@ export function attribute(projectPath, { sessions = [], jobs = [], tasks = [], o
   const p = normPath(projectPath);
   const by = new Set();
   for (const s of sessions) {
-    if (!s.cwd || own.has(s.id) || !within(normPath(s.cwd), p)) continue;
+    if (!s.cwd || isAdaSession(s, { own, jobs }) || !within(normPath(s.cwd), p)) continue;
     if (sessionActive(s, now) || now - (s.lastActivity || 0) < GRACE_MS) by.add(s.agent === 'codex' ? 'Codex' : 'Claude terminal session');
   }
   for (const j of jobs) if (j.status === 'running' && j.folder && within(normPath(j.folder), p)) by.add('Ada job');
@@ -260,7 +279,7 @@ export class Journal {
     const now = this.now();
     const byId = new Map(sessions.map((s) => [s.id, s]));
     for (const s of sessions) {
-      if (ctx.own?.has(s.id)) continue;
+      if (isAdaSession(s, { own: ctx.own, jobs: ctx.jobs })) continue;
       if (sessionActive(s, now)) {
         const prev = this.live.get(s.id);
         this.live.set(s.id, { since: prev?.since || now, agent: s.agent, cwd: s.cwd, title: s.title, note: s.thought || s.title });

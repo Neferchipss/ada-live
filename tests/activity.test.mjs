@@ -213,6 +213,49 @@ test('Run anyway on an approved full job starts it through the normal approval p
   assert.equal(s.runs[0].role, 'full');
 });
 
+// ---------- Ada's own workers are never "someone else's terminal" ----------
+
+async function runningFull(s) {
+  await s.say('go', [{ mode: 'full', folder: s.baba, prompt: 'build', title: 'Build' }]);
+  const j = s.hub.state.jobs[0];
+  assert.equal(s.hub.handle(s.cmd('approve', { job: j.id, approval: j.approvalId, pin: PIN })), null);
+  assert.equal(j.status, 'running');
+  return j;
+}
+const workersOf = (s) => activeMap({ projects: s.projects, workRoot: s.work, now: NOW, sessions: s.hub.external().sessions, jobs: s.hub.state.jobs, own: s.hub.ownSessions() }).flatMap((g) => g.workers);
+
+test('a running full job records its session as soon as it is known, and is not also listed as a terminal', async () => {
+  const s = hubSetup();
+  const j = await runningFull(s);
+  assert.equal(typeof s.runs[0].onSession, 'function', 'full jobs pass onSession like safe ones');
+  s.runs[0].onSession('full-sess-1');
+  assert.equal(j.session, 'full-sess-1');
+  assert.equal(s.hub.ownSessions().has('full-sess-1'), true);
+  s.ext.sessions = [sess({ id: 'full-sess-1', cwd: s.baba, title: 'Build thing' })];
+  const w = workersOf({ ...s, hub: { ...s.hub, external: () => s.ext, state: s.hub.state, ownSessions: () => s.hub.ownSessions() } });
+  assert.deepEqual(w.map((x) => x.source), ['ada-job'], 'one worker, not two');
+});
+
+test('defensive: a "Job from Ada" prompt, or a session that began with a running job in its folder, is excluded even without a session id', async () => {
+  const s = hubSetup();
+  const j = await runningFull(s); // no onSession call: the id is unknown
+  const sessions = [
+    sess({ id: 'by-prompt', cwd: s.baba, firstPrompt: "Job from Ada (Nefer's orchestrator), sent from his phone." }),
+    sess({ id: 'by-title', cwd: s.baba, title: "Job from Ada (Nefer's orchestrator), sent fr…" }),
+    sess({ id: 'by-start', cwd: s.baba, startedAt: j.startedAt + 3000 }),
+    sess({ id: 'mine', cwd: s.baba, startedAt: j.startedAt - 3600e3, title: 'Real terminal work' }),
+    sess({ id: 'elsewhere', cwd: s.other, startedAt: j.startedAt + 1000, title: 'Other folder' }),
+  ];
+  const map = activeMap({ projects: s.projects, workRoot: s.work, now: NOW, sessions, jobs: s.hub.state.jobs, own: s.hub.ownSessions() });
+  const ids = map.flatMap((g) => g.workers).map((w) => w.id);
+  assert.deepEqual(ids.sort(), [j.id, 'elsewhere', 'mine'].sort());
+  // header count and tab badge are derived from these workers plus real jobs: Ada's job appears exactly once
+  assert.equal(map.flatMap((g) => g.workers).filter((w) => w.source === 'ada-job').length, 1);
+  // and the conflict guard / attribution do not treat Ada's own worker as someone else
+  assert.equal(findConflict(s.baba, { projects: s.projects, workRoot: s.work, now: NOW, sessions: sessions.slice(0, 3), jobs: s.hub.state.jobs }), null);
+  assert.equal(attribute(s.baba, { sessions: sessions.slice(0, 3), jobs: s.hub.state.jobs, now: NOW }), 'Ada job');
+});
+
 // ---------- journal ----------
 
 function repo() {

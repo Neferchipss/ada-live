@@ -54,6 +54,7 @@ function parseSession(file) {
     step: '',
     thought: '',
     lastActivity: st.mtimeMs,
+    startedAt: st.birthtimeMs || 0,
     remote: false,
   };
   const pending = new Map();  // tool_use id -> step
@@ -98,6 +99,7 @@ function parseSession(file) {
           const text = typeof c === 'string' ? c : (c || []).map((b) => b.text || '').join(' ');
           if (text && !text.startsWith('<')) {
             s.steps.push({ t, kind: 'prompt', text: clip(text, 140) });
+            if (!s.firstPrompt) s.firstPrompt = clip(text, 160);
             last = { kind: 'prompt', t };
           }
         }

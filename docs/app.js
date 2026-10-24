@@ -1014,18 +1014,20 @@ function jobCard(j) {
 // Live strip of active workers, pinned under the chat header. Redrawn on every snapshot (render) and tick.
 // Approve/Deny/Kill use the same data attributes and handlers as the job cards (jobActionClick).
 const ACTIVE_JOB = ['awaiting-approval', 'running', 'queued', 'killing'];
-const STRIP_MAX = 5;
-let stripOpen = false;
+let stripPref = false; // the user's own expand/collapse choice; a pending approval forces it open
+try { stripPref = localStorage.getItem('ada-strip') === '1'; } catch {}
 let stripKey = '';
 
 function stripStatus(j) {
-  if (j.status === 'awaiting-approval') return approvalOpen(j) ? 'waiting for your approval' : 'approval expired';
+  if (j.status === 'awaiting-approval') return approvalOpen(j) ? 'waiting for approval' : 'approval expired';
   if (j.status === 'queued' && j.holdReason) return 'held';
   return j.status === 'killing' ? 'stopping' : j.status;
 }
 
 const SRC_LABEL = { terminal: 'Terminal', 'ada-job': 'Ada job', task: 'Task' };
-const placeSub = (sub) => `› ${sub || 'project root'}`;
+// Subline: "Folder · status". The agent is named only when it is not the usual one (Claude).
+const subline = (...parts) => parts.filter(Boolean).join(' · ');
+const agentTag = (a) => (a && a !== 'claude' ? agentLabel[a] || a : '');
 
 function stripRow(it) {
   if (it.ext) return extRow(it);
@@ -1042,7 +1044,7 @@ function stripRow(it) {
       <span class="tl-ico">${icon}</span>
       <span class="tl-main">
         <span class="tl-title">${modeBadge(j)}${esc(j.title)}</span>
-        <span class="tl-sub"><span class="ws-src">${SRC_LABEL['ada-job']}</span> · ${esc(agentLabel[j.agent] || j.agent)} · ${esc(placeSub(it.sub))} · ${esc(stripStatus(j))}</span>
+        <span class="tl-sub">${esc(subline(it.sub, stripStatus(j), agentTag(j.agent)))}</span>
       </span>
       <span class="tl-time"><span data-since="${since0}">${since(since0)}</span></span>
     </div>
@@ -1058,22 +1060,27 @@ function extRow({ w, sub }) {
       <span class="tl-ico">${w.status === 'blocked' ? ICON.wait : ICON.spin}</span>
       <span class="tl-main">
         <span class="tl-title">${esc(w.title || 'Session')}</span>
-        <span class="tl-sub"><span class="ws-src">${esc(SRC_LABEL[w.source] || w.source)}</span> · ${esc(agentLabel[w.agent] || w.agent)} · ${esc(placeSub(sub))} · ${label}</span>
+        <span class="tl-sub">${esc(subline(SRC_LABEL[w.source] || w.source, sub, label, agentTag(w.agent)))}</span>
       </span>
       <span class="tl-time"><span data-ago="${w.since}">${ago(w.since)}</span></span>
     </div>
   </div>`;
 }
 
+// A terminal row that is really one of Ada's own workers. The collector filters these too; this is the second net.
+const isAdaWorker = (w, jobs) => /^\s*Job from Ada\b/i.test(w.title || '') || jobs.some((j) => j.session && j.session === w.id);
+
 // Everything active, as rows grouped by project: Ada's jobs (full controls) plus terminal sessions and tasks from the active-work map.
 function stripItems() {
   const rank = (j) => ACTIVE_JOB.indexOf(j.status);
-  const jobs = (data?.chat?.jobs || []).filter((j) => ACTIVE_JOB.includes(j.status));
+  const all = data?.chat?.jobs || [];
+  const jobs = all.filter((j) => ACTIVE_JOB.includes(j.status));
   const place = new Map(); // job id -> the map group it sits in
   const items = [];
   for (const g of data?.activeMap || []) {
     for (const w of g.workers) {
       if (w.source === 'ada-job') place.set(w.id, g);
+      else if (w.source === 'terminal' && isAdaWorker(w, all)) continue;
       else items.push({ ext: true, project: g.project, sub: g.subfolder, w, r: 9 });
     }
   }
@@ -1084,35 +1091,48 @@ function stripItems() {
   return items.sort((a, b) => a.project.localeCompare(b.project) || a.r - b.r);
 }
 
-function renderStrip() {
-  const el = $('#work-strip');
-  const items = stripItems();
-  const jobs = items.filter((i) => i.job).map((i) => i.job);
-  const key = JSON.stringify([items, jobs.map(approvalOpen), wsLive, data?.chat?.fullModePinSet, stripOpen]);
-  if (key === stripKey) { renderApprovals(); return; }
-  stripKey = key;
-
+// "● 2 working · 1 waiting ›", or with the title and age when there is exactly one thing going on.
+function stripSummary(items, jobs) {
   const waiting = jobs.filter((j) => j.status === 'awaiting-approval').length;
   const held = jobs.filter((j) => j.status === 'queued' && j.holdReason).length;
   const term = items.length - jobs.length;
   const working = jobs.length - waiting - held;
-  const count = [working ? `${working} working` : '', term ? `${term} in terminal` : '', held ? `${held} held` : '', waiting ? `${waiting} to approve` : ''].filter(Boolean).join(' · ');
-  $('#ch-count').textContent = count ? ` · ${count}` : '';
+  const parts = [working ? `${working} working` : '', waiting ? `${waiting} waiting` : '', held ? `${held} held` : '', term ? `${term} in terminal` : ''].filter(Boolean);
+  let tail = '';
+  if (items.length === 1) {
+    const it = items[0];
+    const t0 = it.job ? (it.job.status === 'running' ? it.job.startedAt : it.job.createdAt) : it.w.since;
+    const t = Number.isFinite(t0) ? t0 : Date.now();
+    tail = ` · ${esc(it.job ? it.job.title : it.w.title || 'Session')} · <span data-since="${t}">${since(t)}</span>`;
+  }
+  return `<span class="ws-dot"></span><span class="ws-sum-t">${esc(parts.join(' · '))}${tail}</span><span class="ws-chev">›</span>`;
+}
+
+function renderStrip() {
+  const el = $('#work-strip');
+  const items = stripItems();
+  const jobs = items.filter((i) => i.job).map((i) => i.job);
+  const waiting = jobs.some((j) => j.status === 'awaiting-approval');
+  const open = waiting || stripPref;
+  const key = JSON.stringify([items, jobs.map(approvalOpen), wsLive, data?.chat?.fullModePinSet, open]);
+  if (key === stripKey) { renderApprovals(); return; }
+  stripKey = key;
+
+  $('#ch-count').textContent = '';
   const badge = $('#tab-badge');
-  badge.hidden = !items.length;
-  badge.textContent = String(items.length);
+  badge.hidden = !jobs.length; // real jobs only: read-only terminal rows are not counted
+  badge.textContent = String(jobs.length);
 
   el.hidden = !items.length;
-  if (!items.length) { el.innerHTML = ''; stripOpen = false; renderApprovals(); return; }
-  const shown = stripOpen ? items : items.slice(0, STRIP_MAX);
-  const more = items.length - STRIP_MAX;
+  if (!items.length) { el.innerHTML = ''; renderApprovals(); return; }
+  const multi = new Set(items.map((i) => i.project)).size > 1; // a project header only helps when there are several
   let project = null;
-  el.innerHTML = shown.map((it) => {
-    const head = it.project !== project ? `<div class="ws-proj">${esc(it.project)}</div>` : '';
+  const rows = open ? items.map((it) => {
+    const head = multi && it.project !== project ? `<div class="ws-proj">${esc(it.project)}</div>` : '';
     project = it.project;
     return head + stripRow(it);
-  }).join('')
-    + (more > 0 ? `<button class="ws-more" data-ws-more type="button">${stripOpen ? 'Show less' : `+${more} more`}</button>` : '');
+  }).join('') : '';
+  el.innerHTML = `<button class="ws-sum" data-ws-toggle type="button" aria-expanded="${open}" data-s="${waiting ? 'awaiting-approval' : 'working'}">${stripSummary(items, jobs)}</button>${open ? `<div class="ws-rows">${rows}</div>` : ''}`;
   syncJobActions();
   renderApprovals();
 }
@@ -1155,12 +1175,12 @@ function renderApprovals() {
 
   document.title = open.length ? `(${open.length}) ${BASE_TITLE}` : BASE_TITLE;
   const bar = $('#appr-bar');
-  bar.hidden = !pending.length && !recent.length;
+  bar.hidden = !pending.length; // history lives on the Activity page
   const soon = soonestExpiry(jobs, now);
   bar.dataset.pending = open.length ? '1' : '0';
   bar.innerHTML = open.length
     ? `<span>Approvals · ${open.length} waiting</span>${soon ? `<span class="ab-time">${countdown(soon - now)}</span>` : ''}`
-    : `<span>Approvals · ${pending.length ? 'expired' : 'history'}</span>`;
+    : '<span>Approvals · expired</span>';
 
   const key = JSON.stringify([pending.map((j) => [j.id, approvalOpen(j)]), recent.map((j) => [j.id, j.status]), wsLive, data?.chat?.fullModePinSet]);
   if (key === apprKey) return;
@@ -1169,8 +1189,8 @@ function renderApprovals() {
   const focused = act?.dataset?.approve ? 'approve' : act?.dataset?.deny ? 'deny' : null;
   const focusedId = focused && act.dataset[focused];
   $('#appr-list').innerHTML = pending.length ? pending.map(approvalItem).join('') : '<p class="appr-empty">Nothing waiting for approval.</p>';
-  $('#appr-recent').hidden = !recent.length;
-  $('#appr-recent-list').innerHTML = recent.map((j) => {
+  $('#act-hist').hidden = !recent.length;
+  $('#act-hist-list').innerHTML = recent.map((j) => {
     const t = j.endedAt || j.startedAt || j.createdAt;
     return `<li><span>${modeBadge(j)}${esc(j.title)}</span><em>${esc(outcomeLabel(j))}</em><time data-ago="${t}">${ago(t)}</time></li>`;
   }).join('');
@@ -1204,7 +1224,7 @@ function stripClick(e) {
   if (jobActionClick(e)) return;
   const rv = e.target.closest('[data-review]');
   if (rv) { openApprovalsPanel(rv.dataset.review); return; }
-  if (e.target.closest('[data-ws-more]')) { stripOpen = !stripOpen; renderStrip(); return; }
+  if (e.target.closest('[data-ws-toggle]')) { stripPref = !stripPref; try { localStorage.setItem('ada-strip', stripPref ? '1' : '0'); } catch {} renderStrip(); return; }
   const row = e.target.closest('[data-focus]');
   if (row) focusJobCard(row.dataset.focus);
 }

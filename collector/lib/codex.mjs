@@ -76,6 +76,7 @@ function parse(file, names) {
     step: '',
     thought: '',
     lastActivity: safeStat(file)?.mtimeMs || 0,
+    startedAt: Date.parse(meta.timestamp) || 0,
     images: [],
   };
   let open = false;
@@ -98,6 +99,7 @@ function parse(file, names) {
         const text = (p.content || []).map((c) => c.text || '').join(' ');
         if (text.trim() && !text.trim().startsWith('<')) {
           s.steps.push({ t, kind: 'prompt', text: clip(text, 140) });
+          if (!s.firstPrompt) s.firstPrompt = clip(text, 160);
           if (!s.title) s.title = clip(text, 60);
         }
       } else if (p.type === 'image_generation_call') {

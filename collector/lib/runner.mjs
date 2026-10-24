@@ -56,13 +56,14 @@ export function killProcessTree(child) {
   try { child.kill(process.platform === 'win32' ? undefined : 'SIGKILL'); } catch {}
 }
 
-export function claudeArgs({ role, model, resume, systemFile, addDirs }) {
+export function claudeArgs({ role, model, resume, sessionId, systemFile, addDirs }) {
   const a = ['-p', '--output-format', 'json', '--setting-sources', 'project', '--permission-prompts', 'none'];
   if (role === 'worker') a.push('--permission-mode', 'acceptEdits');
   else if (role === 'full') a.push('--permission-mode', 'bypassPermissions', '--disallowedTools', ...FULL_DISALLOWED);
   else a.push('--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell');
   if (model) a.push('--model', model);
   if (resume) a.push('--resume', resume);
+  else if (sessionId) a.push('--session-id', sessionId); // known up front, so the session can be claimed as Ada's before it shows up as a terminal
   // Ada's prompt is far past Windows' 32K command-line limit, so it goes in a file.
   if (systemFile) a.push('--append-system-prompt-file', systemFile);
   if (addDirs?.length) a.push('--add-dir', ...addDirs);
@@ -92,13 +93,15 @@ export function runAgent({ agent, role, model, cwd, prompt, resume: resumeId, sy
   if (full && !isClaude) input = `${NO_PUSH_RULE}\n\n${input}`;
   let systemFile = null;
   if (isClaude && system) { systemFile = lastMsg.replace(/\.txt$/, '-system.md'); fs.writeFileSync(systemFile, system); }
-  const args = isClaude ? claudeArgs({ role, model, resume, systemFile, addDirs: addDirs?.filter((d) => fs.existsSync(d)) }) : codexArgs({ role, model, resume, cwd, lastMsg });
+  const sessionId = isClaude && !resume ? crypto.randomUUID() : null;
+  const args = isClaude ? claudeArgs({ role, model, resume, sessionId, systemFile, addDirs: addDirs?.filter((d) => fs.existsSync(d)) }) : codexArgs({ role, model, resume, cwd, lastMsg });
   const env = { ...process.env };
   delete env.CLAUDECODE; // let a nested Claude start even if the collector was launched from one
 
   let out = '';
   let tail = '';
-  let session = resume || null;
+  let session = resume || sessionId;
+  if (sessionId) onSession?.(sessionId);
   const child = spawn(isClaude ? 'claude' : 'codex', args, { cwd, windowsHide: true, env, shell: false });
   child.stdin.on('error', () => {});
   child.stdin.end(input);

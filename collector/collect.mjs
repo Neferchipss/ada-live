@@ -178,7 +178,7 @@ async function tick() {
   watchActiveRepos();
   await Promise.all([work.refreshGit(12, gitHook()), refreshAccounts()]);
   const e = externals();
-  journal?.observeSessions(e.sessions, { projects: work.list(), workRoot: cfg.workRoot, own: hub?.ownSessions() });
+  journal?.observeSessions(e.sessions, { projects: work.list(), workRoot: cfg.workRoot, own: hub?.ownSessions(), jobs: hub?.state.jobs || [] });
   hub?.tick(); // re-check held jobs now that sessions may have ended
   const snap = snapshot();
   const wrote = write(snap);

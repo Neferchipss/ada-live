@@ -632,7 +632,7 @@ ${list}`;
   #ctx() {
     let ext = {};
     try { ext = this.external() || {}; } catch { /* fail open: a broken probe must not stall every job */ }
-    return { projects: this.projects(), workRoot: this.workRoot, sessions: ext.sessions || [], tasks: ext.tasks || [], own: this.ownSessions(), now: this.now() };
+    return { projects: this.projects(), workRoot: this.workRoot, sessions: ext.sessions || [], tasks: ext.tasks || [], jobs: this.state.jobs, own: this.ownSessions(), now: this.now() };
   }
 
   /** Sets or clears holdReason on every queued job. Ops jobs and jobs Nefer overrode are exempt. Returns true if anything changed. */
@@ -747,7 +747,9 @@ FULL mode: you may run shell commands and edit files as the task needs. Never gi
 When finished, reply with a short summary: what you changed (file paths), what you ran, and anything left for Nefer.
 
 ${j.prompt}`;
-        run = this.runAgent({ agent: j.agent, role: 'full', model: j.model, cwd: j.folder, prompt, resume: null });
+        run = this.runAgent({ agent: j.agent, role: 'full', model: j.model, cwd: j.folder, prompt, resume: null,
+          onSession: (sid) => { j.session = sid; this.appendTaskEvent({ id: j.id, session: sid }); },
+        });
       }
     } catch (e) { this.#finishJob(j, { ok: false, text: '', error: `Could not start: ${e.message}` }, 'failed', 'start-failed'); return; }
     this.procs.set(j.id, run.child);
