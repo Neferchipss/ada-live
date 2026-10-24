@@ -2,6 +2,8 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
+import { pendingApprovals, openApprovals, soonestExpiry, recentResolved, outcomeLabel, countdown, newApprovals } from './approvals.mjs';
+
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
 const STALE_MS = 2.5 * 60e3;
@@ -992,6 +994,7 @@ function stripRow(it) {
   const icon = j.status === 'running' || j.status === 'killing' ? ICON.spin : ICON.wait;
   const from = j.status === 'running' ? j.startedAt : j.createdAt;
   const since0 = Number.isFinite(from) ? from : Date.now();
+  const review = j.status === 'awaiting-approval' ? `<button class="ws-review" data-review="${esc(j.id)}" type="button">Review</button>` : '';
   const kill = mode !== 'safe' && j.status === 'running' ? `<button class="tl-cancel" data-kill="${esc(j.id)}" type="button" ${wsLive ? '' : 'disabled'}>Kill job</button>` : '';
   return `<div class="ws-row" role="button" tabindex="0" data-s="${esc(j.status)}"${held ? ' data-held="1"' : ''} data-mode="${mode}" data-agent="${esc(j.agent)}" data-focus="${esc(j.id)}">
     <div class="ws-line">
@@ -1002,7 +1005,7 @@ function stripRow(it) {
       </span>
       <span class="tl-time"><span data-since="${since0}">${since(since0)}</span></span>
     </div>
-    ${kill}${approvalControls(j)}${holdControls(j)}
+    ${kill}${review}${holdControls(j)}
   </div>`;
 }
 
@@ -1045,7 +1048,7 @@ function renderStrip() {
   const items = stripItems();
   const jobs = items.filter((i) => i.job).map((i) => i.job);
   const key = JSON.stringify([items, jobs.map(approvalOpen), wsLive, data?.chat?.fullModePinSet, stripOpen]);
-  if (key === stripKey) return;
+  if (key === stripKey) { renderApprovals(); return; }
   stripKey = key;
 
   const waiting = jobs.filter((j) => j.status === 'awaiting-approval').length;
@@ -1059,7 +1062,7 @@ function renderStrip() {
   badge.textContent = String(items.length);
 
   el.hidden = !items.length;
-  if (!items.length) { el.innerHTML = ''; stripOpen = false; return; }
+  if (!items.length) { el.innerHTML = ''; stripOpen = false; renderApprovals(); return; }
   const shown = stripOpen ? items : items.slice(0, STRIP_MAX);
   const more = items.length - STRIP_MAX;
   let project = null;
@@ -1070,6 +1073,79 @@ function renderStrip() {
   }).join('')
     + (more > 0 ? `<button class="ws-more" data-ws-more type="button">${stripOpen ? 'Show less' : `+${more} more`}</button>` : '');
   syncJobActions();
+  renderApprovals();
+}
+
+/* ---------------- Approvals panel ---------------- */
+// A one-line bar under the strip; tapping it opens a sheet listing every job awaiting approval.
+// Buttons are approvalControls(): the same data-approve/data-deny handlers and PIN dialog as the job cards.
+const BASE_TITLE = document.title;
+let seenApprovals = null; // null until the first snapshot, which only seeds
+let apprKey = '';
+
+function approvalItem(j) {
+  const mode = jobMode(j);
+  const op = mode === 'ops' ? j.operation : null;
+  const controls = approvalOpen(j) ? approvalControls(j) : '<p class="tl-warn">Expired</p><div class="job-buttons"><button class="tl-approve" type="button" disabled>Expired</button></div>';
+  return `<article class="appr-item" data-appr="${esc(j.id)}" data-mode="${mode}">
+    <div class="tl-title">${modeBadge(j)}${esc(j.title)}</div>
+    <div class="tl-row"><b>Agent</b><span>${esc(mode === 'ops' ? 'Collector · allowlisted operation' : brainLabel(j))}</span></div>
+    <div class="tl-row"><b>Project</b><span>${esc(short(j.folder).split(' / ').pop())}</span></div>
+    <div class="tl-row"><b>Folder</b><span>${esc(mode === 'safe' ? short(j.folder) : j.folder)}</span></div>
+    ${op ? `<div class="tl-row"><b>Operation</b><span>${esc(op.name || '')}</span></div>` : ''}
+    <div class="tl-sec dim"><b>${mode === 'ops' ? 'Exact operation' : 'Instructions'}</b>${jobInstructions(j)}</div>
+    ${controls}
+  </article>`;
+}
+
+function renderApprovals() {
+  const jobs = data?.chat?.jobs || [];
+  const now = Date.now();
+  const pending = pendingApprovals(jobs, now);
+  const open = openApprovals(jobs, now);
+  const recent = recentResolved(jobs, now);
+
+  const found = newApprovals(jobs, seenApprovals, now);
+  seenApprovals = found.seen;
+  if (found.fresh.length) {
+    try { navigator.vibrate?.(100); } catch {}
+    openApprovalsPanel(found.fresh[0].id);
+  }
+
+  document.title = open.length ? `(${open.length}) ${BASE_TITLE}` : BASE_TITLE;
+  const bar = $('#appr-bar');
+  bar.hidden = !pending.length && !recent.length;
+  const soon = soonestExpiry(jobs, now);
+  bar.dataset.pending = open.length ? '1' : '0';
+  bar.innerHTML = open.length
+    ? `<span>Approvals · ${open.length} waiting</span>${soon ? `<span class="ab-time">${countdown(soon - now)}</span>` : ''}`
+    : `<span>Approvals · ${pending.length ? 'expired' : 'history'}</span>`;
+
+  const key = JSON.stringify([pending.map((j) => [j.id, approvalOpen(j)]), recent.map((j) => [j.id, j.status]), wsLive, data?.chat?.fullModePinSet]);
+  if (key === apprKey) return;
+  apprKey = key;
+  const act = document.activeElement;
+  const focused = act?.dataset?.approve ? 'approve' : act?.dataset?.deny ? 'deny' : null;
+  const focusedId = focused && act.dataset[focused];
+  $('#appr-list').innerHTML = pending.length ? pending.map(approvalItem).join('') : '<p class="appr-empty">Nothing waiting for approval.</p>';
+  $('#appr-recent').hidden = !recent.length;
+  $('#appr-recent-list').innerHTML = recent.map((j) => {
+    const t = j.endedAt || j.startedAt || j.createdAt;
+    return `<li><span>${modeBadge(j)}${esc(j.title)}</span><em>${esc(outcomeLabel(j))}</em><time data-ago="${t}">${ago(t)}</time></li>`;
+  }).join('');
+  if (focused) [...document.querySelectorAll(`#appr-list [data-${focused}]`)].find((b) => b.dataset[focused] === focusedId)?.focus();
+  syncJobActions();
+}
+
+function openApprovalsPanel(id) {
+  apprKey = '';
+  setSheet('#approvals-sheet', true);
+  renderApprovals();
+  const el = id && [...document.querySelectorAll('#appr-list [data-appr]')].find((n) => n.dataset.appr === id);
+  if (!el) return;
+  el.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 1600);
 }
 
 // Scroll to a job's card in the chat and open it.
@@ -1085,6 +1161,8 @@ function focusJobCard(id) {
 
 function stripClick(e) {
   if (jobActionClick(e)) return;
+  const rv = e.target.closest('[data-review]');
+  if (rv) { openApprovalsPanel(rv.dataset.review); return; }
   if (e.target.closest('[data-ws-more]')) { stripOpen = !stripOpen; renderStrip(); return; }
   const row = e.target.closest('[data-focus]');
   if (row) focusJobCard(row.dataset.focus);
@@ -1330,6 +1408,8 @@ function bindChat() {
     brainPref.model = b.dataset.model;
     saveBrain(); chatKey = ''; renderChat(); setSheet('#brain-sheet', false);
   });
+  $('#appr-bar').addEventListener('click', () => openApprovalsPanel());
+  $('#approvals-sheet').addEventListener('click', jobActionClick);
   $('#work-strip').addEventListener('click', stripClick);
   $('#work-strip').addEventListener('keydown', (e) => {
     if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-focus]')) { e.preventDefault(); focusJobCard(e.target.dataset.focus); }

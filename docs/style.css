@@ -507,3 +507,26 @@ body.sheet-open { overflow: hidden; }
 .viewer-cap:empty { display: none; }
 .viewer-close { position: absolute; top: calc(10px + env(safe-area-inset-top, 0px)); right: 12px; width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line); background: rgba(24, 22, 27, 0.9); display: grid; place-items: center; cursor: pointer; z-index: 2; }
 .viewer-close svg { width: 20px; height: 20px; fill: none; stroke: var(--text); stroke-width: 2.4; stroke-linecap: round; }
+
+/* Approvals panel: one-line bar under the workers strip, full list in a sheet */
+.appr-bar { flex: 1 0 100%; display: flex; align-items: center; gap: 10px; min-height: 48px; box-sizing: border-box; border: 1px solid var(--line) !important; border-radius: 14px; background: var(--bg-2) !important; padding: 8px 14px; font: 600 13px var(--mono) !important; color: var(--muted) !important; text-align: left; cursor: pointer; }
+.appr-bar[hidden] { display: none; }
+.appr-bar[data-pending='1'] { border-color: rgba(240, 164, 58, .6) !important; background: var(--amber-soft) !important; color: var(--amber) !important; }
+.appr-bar .ab-time { margin-left: auto; font-weight: 400; }
+.appr-card { max-height: calc(100dvh - 20px); overflow-y: auto; padding-bottom: calc(22px + var(--safe-b)); }
+.appr-item { display: grid; gap: 10px; border: 1px solid rgba(240, 164, 58, .55); border-left: 4px solid var(--amber); border-radius: 14px; background: var(--card); padding: 12px; margin-bottom: 10px; }
+.appr-item.flash { box-shadow: 0 0 0 2px var(--amber); }
+.appr-item .tl-title { font-weight: 600; overflow-wrap: anywhere; }
+.appr-item .tl-row { display: grid; gap: 2px; font: 12px var(--mono); overflow-wrap: anywhere; }
+.appr-item .tl-row b { color: var(--muted); font-weight: 500; }
+.appr-item .job-instructions { max-height: 30vh; overflow: auto; margin: 0; }
+.appr-item .tl-approve, .appr-item .tl-cancel { min-height: 46px; padding: 10px 18px; font-size: 13px !important; }
+.appr-item .job-buttons > button { flex: 1 1 140px; }
+.appr-empty { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+.appr-recent summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font: 12px var(--mono); color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+.appr-recent ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.appr-recent li { display: flex; gap: 8px; align-items: baseline; font: 12px var(--mono); border-top: 1px solid var(--line); padding: 8px 0; }
+.appr-recent li span:first-child { flex: 1; overflow-wrap: anywhere; }
+.appr-recent li em { font-style: normal; color: var(--amber); white-space: nowrap; }
+.appr-recent li time { color: var(--dim); white-space: nowrap; }
+.ws-review { justify-self: start; min-height: 44px; border: 1px solid var(--amber) !important; color: var(--bg) !important; background: var(--amber) !important; border-radius: 999px; padding: 10px 18px; font: 600 13px var(--mono) !important; cursor: pointer; }
