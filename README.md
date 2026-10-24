@@ -28,3 +28,33 @@ Run locally:
   This needs the relay in `relay/` redeployed once (`cd relay && npx wrangler deploy`); until then the paperclip is
   disabled and nothing else changes.
 - ffmpeg/ffprobe must be on PATH for video and for shrinking big images; without them video is refused with a message.
+
+## Active work, conflict guard and change journal
+
+- **Active-work map** (`activeMap` in the snapshot): per project folder, who is working there right now: terminal
+  Claude/Codex sessions (same `working` status the session readers already compute; a `blocked` session counts for
+  30 minutes), Ada chat jobs (running, queued, awaiting approval) and delegated tasks. Ada's own sessions are left
+  out. The chat strip groups rows by project and shows the subfolder and a source label.
+- **Conflict guard**: before a safe or full job starts, `ChatHub` looks for an active terminal session or task whose
+  folder equals, contains or sits inside the job's folder. If there is one the job stays `queued` with a
+  `holdReason`, is re-checked on every pump and collector tick, and starts by itself when clear. After 10 minutes
+  a notice is posted in chat. **Run anyway** sends the sealed `override-hold` command, which only skips this check:
+  full jobs still need their approval and PIN. Ops jobs are exempt. A session sitting at the Work root itself does
+  not block anything.
+- **Change journal** (`~/.ada-viewer/journal.json`, newest 400 entries, 30 days): on each git refresh, new commits,
+  branch changes and uncommitted file *names* (never contents; secret-looking names are dropped), credited to the
+  session or job that was working in that project, plus a line when a terminal session goes from working to idle.
+  The last 50 show under Activity → Recent changes, and Ada gets a digest of what changed since her last turn.
+
+### Proposed follow-up: Claude Code hooks (design note, not implemented)
+
+Polling git and session logs can only guess who changed what and when. Claude Code hooks could report it directly:
+
+- A `PostToolUse` hook (matcher `Edit|Write|MultiEdit`) and a `Stop` hook run a tiny script that appends one JSON line
+  (`{t, cwd, session_id, event, tool, file}`; file *name* only) to `~/.ada-viewer/hook-events.jsonl` and exits at once.
+- The collector tails that file each tick and turns it into journal entries: exact attribution (no 3-minute grace
+  guess), accurate session start/stop times, and sub-second "a session is editing X" for the conflict guard instead of
+  waiting for the log-based `working` status.
+- Hooks live in the user's Claude Code settings, so installing them is Nefer's decision: ship the script under
+  `tools/` plus the settings snippet to paste, and keep the collector working unchanged when the file is absent.
+  The script must never read stdin payload fields beyond those names and must fail silent so it cannot slow or break a session.
