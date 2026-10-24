@@ -3,6 +3,7 @@
 // drops anything else, and Ada's workers run in safe mode.
 
 import { pendingApprovals, openApprovals, soonestExpiry, recentResolved, outcomeLabel, countdown, newApprovals } from './approvals.mjs';
+import { PROJECT_LIMIT, todayStats, needsAttention, waitingApprovals, nowGroups, byProject, projectOf, timelineRows } from './activity-model.mjs?v=activity-1';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -1474,9 +1475,13 @@ function bindChat() {
   }, true);
 }
 
-/* ---------------- activity (tasks + log) ---------------- */
+/* ---------------- activity (tiles, attention, now, by project, full timeline) ---------------- */
 let actFilter = 'all';
+let actRange = '7d';
+let projShown = PROJECT_LIMIT;
+let fullOpen = false;
 const openTasks = new Set();
+const openProj = new Set();
 
 function dayLabel(t) {
   const d = new Date(t), now = new Date();
@@ -1506,8 +1511,6 @@ function taskCard(k) {
 }
 
 // What changed in the projects (commits, branches, uncommitted files, finished terminal sessions), whoever did it.
-let changesOpen = false;
-
 function changeText(e) {
   switch (e.kind) {
     case 'commit': return `Commit ${e.hash}: ${e.subject}`;
@@ -1518,70 +1521,184 @@ function changeText(e) {
   }
 }
 
-function renderChanges() {
-  const list = data.journal || [];
-  if (!list.length) { $('#act-changes').innerHTML = ''; return; }
-  const groups = new Map(); // newest first, so the busiest project leads
-  for (const e of list) { if (!groups.has(e.project)) groups.set(e.project, []); groups.get(e.project).push(e); }
-  $('#act-changes').innerHTML = `<details class="chg" id="chg-all" ${changesOpen ? 'open' : ''}>
-    <summary><h2 class="sec">Recent changes <small>${list.length}</small></h2></summary>
-    ${[...groups].map(([project, es]) => `<div class="chg-proj"><b>${esc(project)}</b>
-      <ul>${es.map((e) => `<li data-kind="${esc(e.kind)}"><span class="chg-text">${esc(changeText(e))}</span><span class="chg-meta">${esc(e.by || 'unknown')} · <time data-ago="${e.t}">${ago(e.t)}</time></span></li>`).join('')}</ul>
-    </div>`).join('')}
+function eventRow(i) {
+  return `<li class="act-row ${i.error ? 'err' : ''}" data-agent="${esc(i.agent)}" data-kind="${esc(i.kind)}">
+    <span class="ar-dot"></span>
+    <div class="ar-body">
+      <div class="ar-meta"><b>${i.kind === 'prompt' ? 'You' : esc(agentLabel[i.agent] || i.agent)}</b>${i.cwd ? `<span>${esc(short(i.cwd).split(' / ').pop())}</span>` : ''}<time data-ago="${i.t}">${ago(i.t)}</time></div>
+      <div class="ar-text">${esc(i.text)}</div>
+    </div>
+  </li>`;
+}
+
+const fmt = (n) => (n === null || n === undefined ? '—' : String(n));
+
+const TILES = [
+  ['active', 'Active now'], ['done', 'Tasks done'], ['failed', 'Failed'],
+  ['commits', 'Commits'], ['unpushed', 'Unpushed'], ['sessions', 'Sessions'],
+];
+
+function renderTiles(stats) {
+  $('#act-tiles').innerHTML = TILES.map(([k, label]) => `<button type="button" class="tile${stats[k] ? ' on' : ''}" data-tile="${k}"><b>${fmt(stats[k])}</b><span>${label}</span></button>`).join('');
+}
+
+const ATTN_LABEL = { failed: 'Failed', held: 'Held', expired: 'Expired', unpushed: 'Unpushed', limit: 'Limit' };
+
+function renderAttention(list) {
+  $('#act-attn').innerHTML = list.length
+    ? `<h2 class="sec">Needs attention <small>${list.length}</small></h2><div class="attn">${list.map((a) => {
+      const inner = `<span class="attn-k">${ATTN_LABEL[a.kind]}</span><span class="attn-t">${esc(a.title)}</span><span class="attn-d">${esc(a.detail)}${a.t ? ` · <time data-ago="${a.t}">${ago(a.t)}</time>` : ''}</span>`;
+      return a.kind === 'limit' ? `<div class="attn-row" data-kind="limit">${inner}</div>`
+        : `<button type="button" class="attn-row" data-kind="${esc(a.kind)}" data-attn="${esc(a.kind)}" data-id="${esc(a.id)}">${inner}</button>`;
+    }).join('')}</div>` : '';
+}
+
+function renderNow(waiting) {
+  const groups = nowGroups(data);
+  const jobs = new Map((data.chat?.jobs || []).map((j) => [j.id, j]));
+  const tasks = new Map((data.tasks || []).map((k) => [k.id, k]));
+  if (!groups.length && !waiting) { $('#act-now').innerHTML = ''; return; }
+  const body = groups.map((g) => `<div class="ws-proj">${esc(g.project)}${g.subfolder ? ` › ${esc(g.subfolder)}` : ''}</div>${g.workers.map((w) => {
+    const label = `<span class="now-src">${esc(SRC_LABEL[w.source] || w.source)}</span>`;
+    if (w.source === 'ada-job' && jobs.has(w.id)) return `<div class="now-item">${label}${jobCard(jobs.get(w.id))}</div>`;
+    if (w.source === 'task' && tasks.has(w.id)) return `<div class="now-item">${label}${taskCard(tasks.get(w.id))}</div>`;
+    return extRow({ w, sub: g.subfolder });
+  }).join('')}`).join('');
+  $('#act-now').innerHTML = `<h2 class="sec">Now <small>${groups.reduce((n, g) => n + g.workers.length, 0)}</small></h2>
+    ${waiting ? `<button type="button" class="act-appr" data-act-appr>${waiting} waiting for approval <span>Review ›</span></button>` : ''}
+    ${body}`;
+}
+
+// One compact line for a project history item.
+function itemLine(x) {
+  if (x.type === 'task') return { k: 'Task', text: `${x.task.title} — ${x.task.status}` };
+  if (x.type === 'event') return { k: x.item.kind === 'prompt' ? 'You' : agentLabel[x.item.agent] || x.item.agent, text: x.item.text };
+  return { k: x.change.by || 'Change', text: changeText(x.change) };
+}
+
+const lineHtml = (x) => {
+  const l = itemLine(x);
+  return `<div class="ap-line"><span class="ap-k">${esc(l.k)}</span><span class="ap-t">${esc(l.text)}</span><time data-ago="${x.t}">${ago(x.t)}</time></div>`;
+};
+
+function historyHtml(items) {
+  let day = '';
+  return items.slice(0, 60).map((x) => {
+    const d = dayLabel(x.t);
+    const sep = d !== day ? `<div class="act-day">${esc(d)}</div>` : '';
+    day = d;
+    if (x.type === 'task') return `${sep}<div class="act-card">${taskCard(x.task)}</div>`;
+    if (x.type === 'event') return `${sep}<ul class="act-list">${eventRow(x.item)}</ul>`;
+    return sep + lineHtml(x);
+  }).join('');
+}
+
+function projectCard(g) {
+  const chips = [['tasks', 'task'], ['sessions', 'session'], ['commits', 'commit'], ['unpushed', 'unpushed']]
+    .filter(([k]) => g.counts[k]).map(([k, w]) => `<span class="ap-chip" data-k="${k}">${k === 'unpushed' ? `${g.counts[k]} unpushed` : plural(g.counts[k], w)}</span>`).join('');
+  const prev = g.items.slice(0, 3).map(lineHtml).join('');
+  return `<details class="act-proj" data-proj="${esc(g.key)}" ${openProj.has(g.key) ? 'open' : ''}>
+    <summary>
+      <div class="ap-head"><span class="ap-name">${esc(g.name)}</span><time class="ago" data-ago="${g.last}">${ago(g.last)}</time>${ICON.chev}</div>
+      ${chips ? `<div class="ap-chips">${chips}</div>` : ''}
+      ${prev ? `<div class="ap-prev">${prev}</div>` : ''}
+    </summary>
+    <div class="ap-body">${g.items.length ? historyHtml(g.items) : '<div class="empty">No recorded activity.</div>'}</div>
   </details>`;
 }
 
-function renderActivity() {
-  const tasks = data.tasks || [];
-  renderChanges();
-  const approvals = (data.chat?.jobs || []).filter((j) => j.status === 'awaiting-approval');
-  $('#act-approvals').innerHTML = approvals.length ? `<h2 class="sec">Awaiting approval <small>${approvals.length}</small></h2>${approvals.map(jobCard).join('')}` : '';
-  const running = tasks.filter((k) => k.status === 'running' || k.status === 'queued');
-  $('#act-running').innerHTML = running.length
-    ? `<h2 class="sec">In progress <small>${running.length}</small></h2>${running.map(taskCard).join('')}` : '';
+function renderProjects() {
+  const groups = byProject(data);
+  if (!groups.length) { $('#act-projects').innerHTML = ''; return; }
+  const shown = groups.slice(0, projShown);
+  $('#act-projects').innerHTML = `<h2 class="sec">By project <small>${groups.length}</small></h2>${shown.map(projectCard).join('')}${groups.length > shown.length ? `<button type="button" class="ws-more ap-more" data-more>Show ${groups.length - shown.length} more</button>` : ''}`;
+}
 
-  const items = [];
-  if (actFilter !== 'agents' && actFilter !== 'you') {
-    for (const k of tasks) if (!running.includes(k)) items.push({ t: k.updatedAt, task: k });
-  }
-  if (actFilter !== 'tasks') {
-    for (const i of data.timeline || []) {
-      if (i.kind === 'task') continue; // drawn as task cards
-      if (actFilter === 'you' && i.kind !== 'prompt') continue;
-      items.push({ t: i.t, item: i });
-    }
-  }
-  items.sort((a, b) => b.t - a.t);
-  let day = '';
+function renderTimeline() {
   const rows = [];
-  for (const x of items.slice(0, 120)) {
+  let day = '';
+  for (const x of timelineRows(data, { filter: actFilter, range: actRange }, Date.now())) {
     const d = dayLabel(x.t);
-    if (d !== day) { day = d; rows.push(`<li class="act-day">${d}</li>`); }
-    if (x.task) { rows.push(`<li class="act-card">${taskCard(x.task)}</li>`); continue; }
-    const i = x.item;
-    rows.push(`<li class="act-row ${i.error ? 'err' : ''}" data-agent="${esc(i.agent)}" data-kind="${esc(i.kind)}">
-      <span class="ar-dot"></span>
-      <div class="ar-body">
-        <div class="ar-meta"><b>${i.kind === 'prompt' ? 'You' : esc(agentLabel[i.agent] || i.agent)}</b>${i.cwd ? `<span>${esc(short(i.cwd).split(' / ').pop())}</span>` : ''}<time data-ago="${i.t}">${ago(i.t)}</time></div>
-        <div class="ar-text">${esc(i.text)}</div>
-      </div>
-    </li>`);
+    if (d !== day) { day = d; rows.push(`<li class="act-day">${esc(d)}</li>`); }
+    rows.push(x.task ? `<li class="act-card">${taskCard(x.task)}</li>` : eventRow(x.item));
   }
   $('#act-list').innerHTML = rows.length ? rows.join('') : '<li class="empty">Nothing here yet.</li>';
+  $('#act-full').open = fullOpen;
+}
+
+function renderActivity() {
+  const now = Date.now();
+  renderTiles(todayStats(data, now));
+  renderAttention(needsAttention(data, now));
+  renderNow(waitingApprovals(data, now));
+  renderProjects();
+  renderTimeline();
   syncJobActions();
 }
 
+const jump = (el) => el?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+const projKeyOf = (cwd) => projectOf(data.projects, cwd)?.path || '';
+
+function openProjectCard(key, taskId) {
+  projShown = Infinity;
+  openProj.add(key);
+  if (taskId) openTasks.add(taskId);
+  renderProjects();
+  jump([...document.querySelectorAll('#act-projects details[data-proj]')].find((d) => d.dataset.proj === key));
+}
+
+function setTimeline(filter, range) {
+  actFilter = filter; actRange = range; fullOpen = true;
+  document.querySelectorAll('#act-filter button').forEach((x) => x.classList.toggle('on', x.dataset.f === filter));
+  document.querySelectorAll('#act-range button').forEach((x) => x.classList.toggle('on', x.dataset.r === range));
+  renderTimeline();
+  jump($('#act-full'));
+}
+
+function tileClick(k) {
+  const attn = $('#act-attn');
+  if (k === 'active') jump($('#act-now'));
+  else if (k === 'done') setTimeline('tasks', 'today');
+  else if (k === 'failed') (attn.querySelector('[data-attn="failed"]') ? jump(attn) : setTimeline('tasks', 'today'));
+  else if (k === 'sessions') setTimeline('agents', 'today');
+  else if (k === 'unpushed' && attn.querySelector('[data-attn="unpushed"]')) jump(attn.querySelector('[data-attn="unpushed"]'));
+  else jump($('#act-projects'));
+}
+
+function attnClick(kind, id) {
+  if (kind === 'unpushed') { openProjectCard(projKeyOf(id)); return; }
+  if ((data.chat?.jobs || []).some((j) => j.id === id)) { show('chat'); requestAnimationFrame(() => focusJobCard(id)); return; }
+  const task = (data.tasks || []).find((k) => k.id === id);
+  if (task) openProjectCard(projKeyOf(task.cwd), id);
+}
+
 function bindActivity() {
-  $('#view-activity').addEventListener('click', jobActionClick);
+  const view = $('#view-activity');
+  view.addEventListener('click', (e) => {
+    if (jobActionClick(e)) return;
+    const tile = e.target.closest('[data-tile]');
+    if (tile) { tileClick(tile.dataset.tile); return; }
+    const a = e.target.closest('[data-attn]');
+    if (a) { attnClick(a.dataset.attn, a.dataset.id); return; }
+    if (e.target.closest('[data-act-appr]')) { show('chat'); openApprovalsPanel(); return; }
+    if (e.target.closest('[data-more]')) { projShown = Infinity; renderProjects(); }
+  });
   $('#act-filter').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
     actFilter = b.dataset.f;
     document.querySelectorAll('#act-filter button').forEach((x) => x.classList.toggle('on', x === b));
-    renderActivity();
+    renderTimeline();
   });
-  $('#view-activity').addEventListener('toggle', (e) => {
+  $('#act-range').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    actRange = b.dataset.r;
+    document.querySelectorAll('#act-range button').forEach((x) => x.classList.toggle('on', x === b));
+    renderTimeline();
+  });
+  view.addEventListener('toggle', (e) => {
     const d = e.target;
-    if (d.id === 'chg-all') { changesOpen = d.open; return; }
+    if (d.id === 'act-full') { fullOpen = d.open; return; }
+    if ('proj' in (d.dataset || {})) { if (d.open) openProj.add(d.dataset.proj); else openProj.delete(d.dataset.proj); return; }
     if (!d.dataset?.task) return;
     if (d.open) openTasks.add(d.dataset.task); else openTasks.delete(d.dataset.task);
   }, true);

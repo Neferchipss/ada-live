@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=gitwork-1">
+  <link rel="stylesheet" href="style.css?v=activity-1">
 </head>
 <body>
   <!-- Locked: nothing below is readable until the password decrypts the feed. -->
@@ -107,17 +107,25 @@
     </section>
 
     <section class="view" id="view-activity" data-view="activity" hidden>
-      <div id="act-approvals"></div>
-      <div id="act-running"></div>
-      <div id="act-changes"></div>
-      <h2 class="sec">Activity</h2>
-      <div class="chips" id="act-filter">
-        <button data-f="all" class="on">All</button>
-        <button data-f="tasks">Tasks</button>
-        <button data-f="agents">Agents</button>
-        <button data-f="you">You</button>
-      </div>
-      <ol class="act-list" id="act-list"></ol>
+      <div id="act-tiles" class="tiles"></div>
+      <div id="act-attn"></div>
+      <div id="act-now"></div>
+      <div id="act-projects"></div>
+      <details class="chg" id="act-full">
+        <summary><h2 class="sec">Full timeline</h2></summary>
+        <div class="chips" id="act-filter">
+          <button data-f="all" class="on">All</button>
+          <button data-f="tasks">Tasks</button>
+          <button data-f="agents">Agents</button>
+          <button data-f="you">You</button>
+        </div>
+        <div class="chips" id="act-range">
+          <button data-r="today">Today</button>
+          <button data-r="7d" class="on">7 days</button>
+          <button data-r="all">All</button>
+        </div>
+        <ol class="act-list" id="act-list"></ol>
+      </details>
     </section>
 
     <section class="view" id="view-work" data-view="work" hidden>
@@ -175,6 +183,6 @@
     </nav>
   </div>
 
-  <script src="app.js?v=gitwork-1" type="module"></script>
+  <script src="app.js?v=activity-1" type="module"></script>
 </body>
 </html>
