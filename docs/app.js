@@ -2,10 +2,10 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=sv-3';
-import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-3';
-import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-3';
-import { buildSessionMap, activeCount, RECENT_ID } from './session-map.mjs?v=sv-3';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=sv-4';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-4';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-4';
+import { buildSessionMap, activeCount, RECENT_ID } from './session-map.mjs?v=sv-4';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -1618,7 +1618,7 @@ function bindChat() {
 // The laptop answers each sealed 'session-view' request with sealed chunks on the media channel (see onMediaChunk).
 // The page only ever names an agent and a session id from the list the snapshot carries; there is no way to send into a session.
 const SV_POLL = 3000, SV_SLOW = 10000, SV_QUIET = 5 * 60e3, SV_STOP = 30 * 60e3, SV_KEEP = 400;
-const SV_SRC = { job: 'Job', terminal: 'Terminal' };
+const SV_SRC = { job: 'Job', terminal: 'Terminal', task: 'Task' };
 let svSel = null;                 // { agent, session } while a conversation is open; null = Ada
 let svTok = 0;                    // bumps on every selection so late answers for a closed view are ignored
 let sv = svFresh();
@@ -1636,7 +1636,7 @@ const svLive = (st) => st === 'working' || st === 'blocked';
 const svMeta = () => svList().find((s) => svSel && s.agent === svSel.agent && s.session === svSel.session) || null;
 const svTitle = (s) => String(s?.title || s?.project || 'Session').replace(/\s+/g, ' ').trim();
 function svOpenAttr(agent, session) {
-  if ((agent !== 'claude' && agent !== 'codex') || typeof session !== 'string' || !/^[\w-]{8,64}$/.test(session)) return '';
+  if ((agent !== 'claude' && agent !== 'codex' && agent !== 'task') || typeof session !== 'string' || !/^[\w-]{8,64}$/.test(session)) return '';
   return ` role="button" tabindex="0" data-sv-open="${esc(agent)}|${esc(session)}"`;
 }
 
@@ -1742,8 +1742,17 @@ function svRequest(agent, session, after) {
   });
 }
 
+// A delegated task has no transcript: show its title, status and preview from the snapshot's task list.
+function svTaskView() {
+  const k = (data?.tasks || []).find((x) => `task-${x.id}` === svSel.session);
+  const lines = k ? [`**${k.title || 'Task'}**`, `Status: ${k.status}${k.agent ? ` · ${k.agent}` : ''}${k.cwd ? ` · ${short(k.cwd).split(' / ').pop()}` : ''}`, k.preview || ''].filter(Boolean) : ['This task is no longer in the log.'];
+  sv.entries = [{ i: k?.updatedAt || 1, kind: 'text', role: 'assistant', text: lines.join('\n\n') }];
+  sv.state = 'ready'; sv.err = ''; sv.status = k ? (k.status === 'running' ? 'working' : k.status) : '';
+}
+
 async function svPoll() {
   if (!svSel || sv.busy) return;
+  if (svSel.agent === 'task') { svTaskView(); svRefresh(); svSchedule(); return; }
   const me = sv;
   me.busy = true;
   clearTimeout(me.timer);
@@ -1803,7 +1812,7 @@ function svVisibility() {
 }
 
 function selectSession(agent, session) {
-  if ((agent !== 'claude' && agent !== 'codex') || typeof session !== 'string') return;
+  if ((agent !== 'claude' && agent !== 'codex' && agent !== 'task') || typeof session !== 'string') return;
   if (svSel && svSel.agent === agent && svSel.session === session) return;
   clearTimeout(sv.timer);
   svSel = { agent, session };

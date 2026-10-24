@@ -34,7 +34,7 @@ test('activeMap groups workers per project folder with the subfolder', () => {
   const sub = path.join(t.baba, 'src', 'components');
   const map = activeMap({
     projects: t.projects, workRoot: t.work, now: NOW,
-    sessions: [sess({ id: 'a', cwd: sub }), sess({ id: 'b', agent: 'codex', cwd: t.baba }), sess({ id: 'idle', cwd: t.other, status: 'idle' }), sess({ id: 'out', cwd: os.tmpdir() })],
+    sessions: [sess({ id: 'a', cwd: sub }), sess({ id: 'b', agent: 'codex', cwd: t.baba }), sess({ id: 'idle', cwd: t.other, status: 'idle', lastActivity: NOW - 10 * 60e3 }), sess({ id: 'out', cwd: os.tmpdir() })],
     jobs: [{ id: 'j1', status: 'running', agent: 'claude', mode: 'safe', title: 'Fix', folder: sub, startedAt: NOW - 1000 }, { id: 'j2', status: 'done', folder: sub }],
     tasks: [{ id: 'k1', status: 'running', cwd: t.other, title: 'Render', updatedAt: NOW - 1000 }, { id: 'k2', status: 'running', by: 'ada-chat', cwd: t.other, updatedAt: NOW }],
   });
@@ -132,7 +132,7 @@ test('ancestor, descendant and equal folders collide; siblings, idle sessions an
   assert.match(findConflict(sub, ctx(sub, { agent: 'codex' })), /^Codex session/);
   assert.equal(findConflict(sub, ctx(path.join(s.baba, 'src2'))), null);
   assert.equal(findConflict(s.baba, ctx(s.other)), null);
-  assert.equal(findConflict(sub, ctx(sub, { status: 'idle' })), null);
+  assert.equal(findConflict(sub, ctx(sub, { status: 'idle', lastActivity: NOW - 10 * 60e3 })), null);
   assert.equal(findConflict(sub, ctx(s.work)), null, 'a session at the Work root does not block every project');
   assert.match(findConflict(sub, { projects: s.projects, workRoot: s.work, now: NOW, tasks: [{ status: 'running', cwd: sub, title: 'Render', updatedAt: NOW }] }), /^Task "Render" active in babajee › src/);
 });
@@ -362,7 +362,7 @@ test('a session going from working to idle is journaled with its last words', ()
   j.observeSessions([s], ctx);
   assert.equal(j.recent().length, 0);
   clock.t += 5 * 60e3;
-  j.observeSessions([{ ...s, status: 'idle', lastActivity: clock.t }], ctx);
+  j.observeSessions([{ ...s, status: 'idle', lastActivity: clock.t - 10 * 60e3 }], ctx);
   const e = j.recent()[0];
   assert.deepEqual([e.kind, e.project, e.sub, e.agent, e.by], ['session', 'babajee', 'src', 'Claude', 'Claude terminal session']);
   assert.equal(e.durMs, 5 * 60e3);

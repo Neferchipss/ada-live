@@ -12,6 +12,7 @@ const MAX_ENTRIES = 400;
 const MAX_AGE = 30 * 86400e3;
 const MAX_FILES = 8;
 const ACTIVE_BLOCKED_MS = 30 * 60e3;   // a "blocked" session (tool waiting on a permission) still counts if touched this recently
+const TOUCHED_MS = 5 * 60e3;           // a session touched this recently counts as active even when its last turn ended (just started, just replied)
 const TASK_STALE_MS = 2 * 3600e3;      // a task log that says "running" but went quiet this long ago is a leftover
 const GRACE_MS = 3 * 60e3;             // a session that just finished is still credited for changes it caused
 const COALESCE_MS = 10 * 60e3;         // dirty-file entries for one project merge into one while edits keep coming
@@ -27,14 +28,15 @@ const AGENT = { claude: 'Claude', codex: 'Codex' };
 const within = (child, parent) => child === parent || child.startsWith(parent + path.sep);
 const rel = (from, to) => path.relative(from, to).split(path.sep).join('/');
 
-/** Is this external session actually busy right now? Uses the status claude.mjs/codex.mjs already compute. */
+/** Is this external session active right now? ONE definition for Map, switcher and Activity Now: working, blocked recently, or touched in the last few minutes. */
 export function sessionActive(s, now = Date.now()) {
   if (!s) return false;
   if (s.status === 'working') return true;
+  if (s.lastActivity && now - s.lastActivity >= 0 && now - s.lastActivity < TOUCHED_MS) return true;
   return s.status === 'blocked' && now - (s.lastActivity || 0) < ACTIVE_BLOCKED_MS;
 }
 
-const taskActive = (k, now) => k?.status === 'running' && k.by !== 'ada-chat' && now - (k.updatedAt || k.createdAt || 0) < TASK_STALE_MS;
+export const taskActive = (k, now) => k?.status === 'running' && k.by !== 'ada-chat' && now - (k.updatedAt || k.createdAt || 0) < TASK_STALE_MS;
 
 /** Which project is cwd in, and where inside it? null when it's outside the Work folder. */
 export function locate(projects, workRoot, cwd) {
@@ -60,13 +62,14 @@ const START_SLOP_MS = 2 * 60e3;
 
 /**
  * Is this external session really one of Ada's own workers? True when its id is in `own`, its first prompt
- * is the "Job from Ada" preamble, or it sits in the folder of a running Ada job and began around when that job did.
- * A belt-and-braces check: the session id is not always known yet when a job has just started.
+ * is the "Job from Ada" preamble, or (only while its first prompt is still unknown) it sits in the folder of a running
+ * Ada job and began around when that job did. Once the prompt is known the id and the marker decide, so a human terminal
+ * opened in a job's folder is never hidden.
  */
 export function isAdaSession(s, { own = new Set(), jobs = [] } = {}) {
   if (own.has(s.id)) return true;
   if ([s.firstPrompt, s.lastPrompt, s.title].some((t) => ADA_PROMPT.test(t || ''))) return true;
-  if (!s.cwd) return false;
+  if (!s.cwd || s.firstPrompt) return false;
   const c = normPath(s.cwd);
   return jobs.some((j) => j.status === 'running' && j.mode !== 'ops' && j.folder && normPath(j.folder) === c
     && Number.isFinite(s.startedAt) && s.startedAt > 0 && Number.isFinite(j.startedAt)

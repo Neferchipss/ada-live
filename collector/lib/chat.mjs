@@ -15,7 +15,7 @@ import { limits as sharedLimits } from './limits.mjs';
 import { clip } from './util.mjs';
 import { MediaStore, checkAttachPath, cacheKey, validKey, formatSize, transcribe, MAX_ATTACH_PER_REPLY, CHUNK } from './media.mjs';
 import { UploadManager, UPLOAD } from './uploads.mjs';
-import { activeMap, findConflict, liveLine, locate, isAdaSession, sessionActive } from './journal.mjs';
+import { activeMap, findConflict, liveLine, locate, isAdaSession, sessionActive, taskActive } from './journal.mjs';
 import { sessionTranscript } from './transcript.mjs';
 import { claudeSessionContext } from './claude.mjs';
 import { codexSessionContext } from './codex.mjs';
@@ -616,7 +616,19 @@ ${list}`;
       if (now - (x.lastActivity || 0) > SV_RECENT_MS) continue;
       out.push({
         agent: x.agent, session: x.id, title: clip(x.title, 80), ...where(x.cwd), source: 'terminal',
-        status: sessionActive(x, now) ? x.status : 'idle', startedAt: x.startedAt || 0, lastAt: x.lastActivity || 0, ...(x.context ? { context: x.context } : {}),
+        status: sessionActive(x, now) ? (x.status === 'blocked' ? 'blocked' : 'working') : 'idle', startedAt: x.startedAt || 0, lastAt: x.lastActivity || 0, ...(x.context ? { context: x.context } : {}),
+      });
+    }
+    // Delegated tasks (tools/delegate.mjs etc.) have no transcript; Ada's own jobs already appear above as jobs.
+    const jobIds = new Set(jobs.map((j) => j.id));
+    for (const k of ext.tasks || []) {
+      if (!k?.id || k.by === 'ada-chat' || jobIds.has(k.id) || (k.session && (taken.has(k.session) || own.has(k.session)))) continue;
+      const last = k.updatedAt || k.createdAt || 0;
+      if (now - last > SV_RECENT_MS) continue;
+      out.push({
+        agent: 'task', session: `task-${k.id}`, title: clip(k.title, 80), ...where(k.cwd), source: 'task', taskAgent: k.agent || '',
+        status: taskActive(k, now) ? 'working' : k.status === 'done' ? 'done' : k.status === 'failed' ? 'failed' : 'idle',
+        startedAt: k.startedAt || k.createdAt || 0, lastAt: last,
       });
     }
     const live = (e) => (e.status === 'working' || e.status === 'blocked' ? 1 : 0);

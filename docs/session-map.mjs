@@ -1,7 +1,7 @@
 // Pure model for the "Chats map": every chat as a branching tree. No DOM, no globals.
 //   Ada (root) > project > folder (subfolder path segments) > session leaf, then a "Recent" branch of the same shape
 //   holding sessions that finished within the last 24h. Built only from the snapshot's chat.sessions list.
-import { projectOf, subOf, DAY } from './activity-model.mjs?v=sv-3';
+import { projectOf, subOf, DAY } from './activity-model.mjs?v=sv-4';
 
 export const OTHER_LABEL = 'Other';
 export const RECENT_ID = 'recent';
@@ -78,7 +78,7 @@ function branch(list, projectList, prefix, now, recent) {
 }
 
 export function buildSessionMap(data, now = Date.now()) {
-  const sessions = arr(data?.chat?.sessions).filter((s) => s && typeof s.session === 'string' && s.session && (s.agent === 'claude' || s.agent === 'codex'));
+  const sessions = arr(data?.chat?.sessions).filter((s) => s && typeof s.session === 'string' && s.session && (s.agent === 'claude' || s.agent === 'codex' || (s.agent === 'task' && s.source === 'task')));
   const projects = arr(data?.projects);
   const seen = new Set();
   const uniq = sessions.filter((s) => { const k = `${s.agent}|${s.session}`; if (seen.has(k)) return false; seen.add(k); return true; });
