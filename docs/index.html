@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=sv-1">
+  <link rel="stylesheet" href="style.css?v=sv-2">
 </head>
 <body>
   <!-- Locked: nothing below is readable until the password decrypts the feed. -->
@@ -87,6 +87,12 @@
       <div class="sv-actions" id="sv-actions" hidden>
         <button type="button" class="sv-ask" data-sv-ask>Ask Ada about this</button>
         <button type="button" class="sv-backbtn" data-sv-back>Back to Ada</button>
+      </div>
+      <div class="sheet mp-sheet" id="map-sheet" hidden role="dialog" aria-modal="true" aria-labelledby="map-title">
+        <div class="sheet-card mp-card-sheet">
+          <header class="mp-head"><h4 id="map-title">Chats map · 0 active</h4><button type="button" id="map-close" class="mp-x" aria-label="Close map">Close</button></header>
+          <div class="mp-body" id="map-body"></div>
+        </div>
       </div>
       <div class="sheet" id="brain-sheet" hidden>
         <div class="sheet-card">
@@ -199,6 +205,6 @@
       setTimeout(function () { if (!window.__adaBooted) say("Page failed to load (the script did not start). Reload, or clear this site's cache."); }, 4000);
     })();
   </script>
-  <script src="app.js?v=sv-1" type="module"></script>
+  <script src="app.js?v=sv-2" type="module"></script>
 </body>
 </html>

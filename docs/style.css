@@ -698,3 +698,47 @@ div.attn-row { cursor: default; }
 body:not(.in-chat) .sv-actions { display: none; }
 .sv-actions button { flex: 1; border: 1px solid var(--line) !important; background: var(--card) !important; border-radius: 999px; padding: 12px 14px; font: 600 14px var(--sans) !important; }
 .sv-actions .sv-ask { background: var(--red-soft) !important; border-color: rgba(224, 38, 63, .5) !important; }
+
+/* Chats map: full-height sheet with a branching tree (rail + elbow stubs). Phone first: no horizontal scroll. */
+.sv-chip.sv-map { border-style: dashed !important; }
+.mp-sheet { align-items: stretch; }
+.mp-card-sheet { max-width: 560px; height: 100%; border-radius: 0; border: 0; padding: calc(10px + env(safe-area-inset-top, 0px)) 14px calc(14px + var(--safe-b)); display: flex; flex-direction: column; gap: 10px; animation: none; }
+.mp-head { display: flex; align-items: center; gap: 10px; }
+.mp-head h4 { flex: 1 1 auto; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.mp-x { flex: none; min-height: 44px; min-width: 44px; border: 1px solid var(--line) !important; background: var(--card) !important; border-radius: 12px; padding: 0 14px; font-weight: 600 !important; cursor: pointer; }
+.mp-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; display: grid; align-content: start; gap: 8px; }
+.mp-body ul { list-style: none; margin: 0; padding: 0; }
+.mp-card { display: grid; gap: 4px; width: 100%; min-height: 44px; min-width: 0; text-align: left; border: 1px solid var(--line) !important; background: var(--card) !important; border-radius: 12px; padding: 8px 10px; cursor: pointer; color: var(--text) !important; }
+.mp-card:disabled { opacity: .5; cursor: default; }
+.mp-r1, .mp-r2 { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.mp-r1 { flex-wrap: nowrap; }
+.mp-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.mp-age { flex: none; font: 11px var(--mono); color: var(--dim); }
+.mp-ag { font: 11px var(--mono); color: var(--muted); }
+.mp-root { border-color: rgba(224, 38, 63, .45) !important; background: var(--red-soft) !important; }
+.mp-empty { margin: 0; color: var(--dim); font-size: 13px; padding: 2px 4px; }
+.mp-gc { display: flex; align-items: center; gap: 8px; }
+.mp-gc .mp-t { white-space: normal; overflow-wrap: anywhere; font-weight: 600; }
+.mp-caret { flex: none; color: var(--dim); transition: transform .15s; }
+.mp-gc[aria-expanded='true'] .mp-caret { transform: rotate(90deg); }
+.mp-count { flex: none; font: 11px var(--mono); color: var(--muted); }
+.mp-kids { display: grid; gap: 6px; }
+.mp-top { margin-left: 8px !important; }
+/* Rail: each node draws its own vertical line (cut short on the last child) and an elbow stub into its card. */
+.mp-n { position: relative; padding-left: 14px; }
+.mp-n::before { content: ''; position: absolute; left: 0; top: -6px; bottom: 0; border-left: 1px solid var(--line); }
+.mp-n:last-child::before { bottom: auto; height: calc(28px); }
+.mp-n::after { content: ''; position: absolute; left: 0; top: 21px; width: 12px; border-top: 1px solid var(--line); }
+.mp-n > .mp-kids { margin-top: 6px; margin-left: 4px; }
+/* Past a few levels the indent stops growing; the label already carries the path (src/components). */
+.mp-n.deep { padding-left: 0; }
+.mp-n.deep::before, .mp-n.deep::after { display: none; }
+.mp-n.deep > .mp-kids { margin-left: 0; }
+.mp-n.deep > .mp-card { border-left: 3px solid var(--line) !important; }
+.mp-n.recent { opacity: .62; }
+.mp-leaf .sv-dot { background: var(--idle); }
+.mp-leaf .mp-card[data-s='working'] .sv-dot { background: #4cd08a; animation: sv-pulse 1.8s ease-out infinite; }
+.mp-leaf .mp-card[data-s='blocked'] .sv-dot { background: var(--amber); }
+.mp-leaf .mp-card[data-s='failed'] .sv-dot { background: var(--red); }
+.mp-leaf .mp-card[data-agent='codex'] .mp-ag { color: var(--codex); }
+@media (prefers-reduced-motion: reduce) { .mp-leaf .sv-dot, .mp-root .sv-dot, .mp-caret { animation: none !important; transition: none !important; } .mp-leaf .mp-card[data-s='working'] .sv-dot { box-shadow: 0 0 0 2px rgba(76, 208, 138, .35); } }

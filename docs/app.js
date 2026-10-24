@@ -2,9 +2,10 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=sv-1';
-import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-1';
-import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-1';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=sv-2';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-2';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-2';
+import { buildSessionMap, activeCount, RECENT_ID } from './session-map.mjs?v=sv-2';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -1590,10 +1591,14 @@ function bindChat() {
     if (r) { const o = outbox.get(r.dataset.retry); if (o) { outbox.delete(r.dataset.retry); sendChat(o.text); } }
   });
   $('#sv-bar').addEventListener('click', (e) => {
+    if (e.target.closest('[data-sv-map]')) { openMap(); return; }
     if (e.target.closest('[data-sv-ada]')) { backToAda(); return; }
     const c = e.target.closest('[data-sv]');
     if (c) { const [a, id] = c.dataset.sv.split('|'); selectSession(a, id); }
   });
+  $('#map-close').addEventListener('click', closeMap);
+  $('#map-sheet').addEventListener('click', (e) => { if (e.target === $('#map-sheet')) closeMap(); });
+  $('#map-body').addEventListener('click', mapClick);
   $('#sv-banner').addEventListener('click', (e) => {
     if (e.target.closest('[data-sv-back]')) backToAda();
     else if (e.target.closest('[data-sv-retry]')) svRetry();
@@ -1656,12 +1661,13 @@ function renderSwitcher() {
   el.dataset.k = key;
   el.hidden = !list.length;
   const act = list.filter((s) => svLive(s.status)), rest = list.filter((s) => !svLive(s.status));
-  el.innerHTML = `<button type="button" class="sv-chip sv-ada${svSel ? '' : ' on'}" data-sv-ada><span class="sv-t">Ada</span></button>${act.map(svChip).join('')}${rest.length ? `<span class="sv-sep">Recent</span>${rest.map(svChip).join('')}` : ''}`;
+  el.innerHTML = `<button type="button" class="sv-chip sv-ada${svSel ? '' : ' on'}" data-sv-ada><span class="sv-t">Ada</span></button><button type="button" class="sv-chip sv-map" data-sv-map aria-label="Chats map"><span class="sv-t">Map</span></button>${act.map(svChip).join('')}${rest.length ? `<span class="sv-sep">Recent</span>${rest.map(svChip).join('')}` : ''}`;
 }
 
 // Banner, switcher and the composer/actions swap. Cheap enough to run on every chat render.
 function svChrome() {
   renderSwitcher();
+  if (!$('#map-sheet').hidden) renderMap();
   const on = !!svSel;
   $('#composer').hidden = on;
   $('#sv-actions').hidden = !on;
@@ -1832,6 +1838,61 @@ function askAboutSession() {
   input.style.height = 'auto';
   input.style.height = `${Math.min(input.scrollHeight, 168)}px`;
   input.focus();
+}
+
+/* ---------------- chats map: Ada > project > folders > sessions, drawn as a branching tree ---------------- */
+const MP_KEY = 'ada-map-shut', MP_DEEP = 4;
+function mapShutLoad() {
+  try { const v = JSON.parse(localStorage.getItem(MP_KEY) || 'null'); if (Array.isArray(v)) return new Set(v.filter((x) => typeof x === 'string').slice(-200)); } catch {}
+  return new Set([RECENT_ID]);   // Recent starts collapsed
+}
+const mapShut = mapShutLoad();
+const mapShutSave = () => { try { localStorage.setItem(MP_KEY, JSON.stringify([...mapShut])); } catch {} };
+const mapAgo = (ageMs) => (Number.isFinite(ageMs) ? ago(Date.now() - ageMs) : '');
+
+function mapLeaf(n) {
+  const m = n.meta;
+  const attr = svOpenAttr(m.agent, m.session).replace(' role="button" tabindex="0"', '');
+  return `<li class="mp-n mp-leaf${m.recent ? ' recent' : ''}"><button type="button" class="mp-card" data-s="${esc(m.status)}" data-agent="${esc(m.agent)}"${attr || ' disabled'} title="${esc(n.label)}"><span class="mp-r1"><i class="sv-dot"></i><span class="mp-t">${esc(n.label)}</span><time class="mp-age">${esc(mapAgo(m.ageMs))}</time></span><span class="mp-r2"><span class="sv-tag">${esc(SV_SRC[m.source] || m.source || 'Session')}</span><span class="mp-ag">${esc(agentLabel[m.agent] || m.agent)}</span>${ctxBar(m.ctx)}</span></button></li>`;
+}
+
+function mapNode(n, depth) {
+  if (n.kind === 'session') return mapLeaf(n);
+  const shut = mapShut.has(n.id), m = n.meta;
+  const count = n.id === RECENT_ID ? m.count : m.live;
+  const sub = n.id === RECENT_ID ? `${count} finished · 24h` : `${count} live`;
+  const kids = shut ? '' : `<ul class="mp-kids">${n.children.map((c) => mapNode(c, depth + 1)).join('')}</ul>`;
+  return `<li class="mp-n mp-group${depth > MP_DEEP ? ' deep' : ''}${m.recent ? ' recent' : ''}" data-kind="${n.kind}"><button type="button" class="mp-card mp-gc" data-mp-toggle="${esc(n.id)}" aria-expanded="${!shut}"><span class="mp-caret">›</span><span class="mp-t">${esc(n.label)}</span><span class="mp-count">${esc(sub)}</span></button>${kids}</li>`;
+}
+
+function mapHtml(tree) {
+  const root = `<button type="button" class="mp-card mp-root" data-mp-root><span class="mp-r1"><i class="sv-dot${tree.meta.status === 'working' ? ' live' : ''}"></i><span class="mp-t">Ada</span>${svSel ? '<span class="mp-age">back to chat</span>' : '<span class="mp-age">main chat</span>'}</span>${ctxView(tree.meta.ctx) ? `<span class="mp-r2">${ctxBar(tree.meta.ctx)}</span>` : ''}</button>`;
+  const note = tree.meta.note ? `<p class="mp-empty">${esc(tree.meta.note)}</p>` : '';
+  return `${root}${note}<ul class="mp-kids mp-top">${tree.children.map((c) => mapNode(c, 1)).join('')}</ul>`;
+}
+
+function renderMap() {
+  const tree = buildSessionMap(data, Date.now());
+  $('#map-title').textContent = `Chats map · ${activeCount(tree)} active`;
+  const html = mapHtml(tree);
+  const body = $('#map-body');
+  if (body.dataset.k !== html) { body.dataset.k = html; body.innerHTML = html; }
+}
+
+function openMap() { renderMap(); setSheet('#map-sheet', true); }
+function closeMap() { setSheet('#map-sheet', false); }
+
+function mapClick(e) {
+  const tg = e.target.closest('[data-mp-toggle]');
+  if (tg) {
+    const id = tg.dataset.mpToggle;
+    if (mapShut.has(id)) mapShut.delete(id); else mapShut.add(id);
+    mapShutSave(); $('#map-body').dataset.k = ''; renderMap();
+    return;
+  }
+  const op = e.target.closest('[data-sv-open]');
+  if (op) { const [a, id] = op.dataset.svOpen.split('|'); closeMap(); selectSession(a, id); return; }
+  if (e.target.closest('[data-mp-root]')) { closeMap(); backToAda(); }
 }
 
 /* ---------------- activity (tiles, attention, now, by project, full timeline) ---------------- */
