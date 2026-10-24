@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=ctx-1">
+  <link rel="stylesheet" href="style.css?v=pin-1">
 </head>
 <body>
   <!-- Locked: nothing below is readable until the password decrypts the feed. -->
@@ -163,6 +163,7 @@
         <h4 id="approval-title">Approve job</h4>
         <p class="sheet-note">Review the exact job below. This PIN authorizes this job only. FULL can change files and run commands beyond the project folder; pushes, publishing and deployment are prohibited.</p>
         <pre class="job-instructions" id="approval-review"></pre>
+        <p class="tl-warn" id="approval-expiry" data-approval-expires="0" hidden></p>
         <label class="approval-label" for="approval-pin">Approval PIN</label>
         <input id="approval-pin" type="password" inputmode="numeric" autocomplete="off" maxlength="128" required>
         <p class="error" id="approval-error" role="alert"></p>
@@ -192,6 +193,6 @@
       setTimeout(function () { if (!window.__adaBooted) say("Page failed to load (the script did not start). Reload, or clear this site's cache."); }, 4000);
     })();
   </script>
-  <script src="app.js?v=ctx-1" type="module"></script>
+  <script src="app.js?v=pin-1" type="module"></script>
 </body>
 </html>

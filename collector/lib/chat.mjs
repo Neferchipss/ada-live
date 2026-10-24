@@ -836,9 +836,12 @@ ${j.prompt}`;
     const jobs = this.state.jobs
       .filter((j) => ids.has(j.id) || ['running', 'queued', 'awaiting-approval'].includes(j.status))
       // Approval digests and PIN-record fingerprints stay on the laptop. ops/full prompts are shown in full for review.
-      .map(({ prompt, approvalDigest, approvedPinVersion, ...j }) => {
+      .map(({ prompt, approvalDigest, approvedPinVersion, approvalNote, ...j }) => {
         const mode = normalizeMode(j.mode);
-        return { ...j, mode, prompt: mode === 'safe' ? clip(prompt, 600) : String(prompt || '').slice(0, 12000), result: clip(j.result || '', 2000) };
+        // Only these fields of the last refusal travel; never anything PIN-derived.
+        const note = approvalNote && j.status === 'awaiting-approval'
+          ? { approvalNote: { reason: approvalNote.reason, at: approvalNote.at, attemptsLeft: approvalNote.attemptsLeft, lockedUntil: approvalNote.lockedUntil ?? null } } : {};
+        return { ...j, ...note, mode, prompt: mode === 'safe' ? clip(prompt, 600) : String(prompt || '').slice(0, 12000), result: clip(j.result || '', 2000) };
       });
     return {
       thread: { id: t.id, brain: t.brain, busy: t.busy, updatedAt: t.updatedAt, messages, total: t.messages.length, context: t.context?.[t.brain.agent] || null },

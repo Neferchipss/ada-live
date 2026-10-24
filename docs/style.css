@@ -364,7 +364,9 @@ body.in-chat { overflow: hidden; }
 .approval-card { max-height: calc(100dvh - 20px); overflow-y: auto; }
 .approval-label { font: 12px var(--mono); color: var(--muted); }
 #approval-pin { width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); font: 16px var(--mono); padding: 10px; }
-#approval-error { margin: 0; font-size: 12px; }
+#approval-error { margin: 0; font-size: 13px; color: #ff5d73; }
+#approval-error[data-kind='busy'] { color: var(--muted); }
+.appr-retry { justify-self: start; min-height: 32px; border: 1px solid var(--amber); color: var(--amber); background: transparent; border-radius: 999px; padding: 4px 12px; font: 600 12px var(--mono); cursor: pointer; }
 #approval-submit { justify-self: stretch; border-radius: 12px; padding: 12px; }
 
 /* Live worker strip, pinned in the chat header */

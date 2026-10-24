@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { STATE_DIR } from './config.mjs';
 
 export const APPROVAL_MS = 5 * 60e3;
+export const MAX_PIN_TRIES = 5;
 const PIN_MESSAGE = 'Approval PIN not set. Run node tools/set-fullmode-pin.mjs on the laptop.';
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const normalizeMode = (mode) => mode === 'full' || mode === 'ops' ? mode : 'safe';
@@ -141,16 +142,40 @@ export class FullModePolicy {
 
   expired(job) { return !Number.isFinite(job.approvalExpiresAt) || this.now() >= job.approvalExpiresAt; }
 
+  // Public, PIN-free hint for the page: why the last attempt was refused and how many PIN tries remain.
+  #refuse(job, reason, message) {
+    this.pinFailures = this.pinFailures.filter((t) => this.now() - t < APPROVAL_MS);
+    const used = Math.min(this.pinFailures.length, MAX_PIN_TRIES);
+    const locked = used >= MAX_PIN_TRIES;
+    job.approvalNote = { reason: locked && reason === 'wrong-pin' ? 'locked' : reason, at: this.now(), attemptsLeft: MAX_PIN_TRIES - used,
+      lockedUntil: locked ? Math.min(...this.pinFailures) + APPROVAL_MS : null };
+    return message;
+  }
+
+  #auditPin(job, outcome) {
+    try { this.audit(job, outcome); } catch { /* an unwritable log must not turn a refusal into an approval */ }
+  }
+
   approve(job, cmd) {
     if (!job || normalizeMode(job.mode) === 'safe' || job.status !== 'awaiting-approval') return 'Job is not awaiting approval.';
-    if (cmd.job !== job.id || typeof cmd.approval !== 'string' || cmd.approval !== job.approvalId) return 'Approval does not match this job.';
-    if (this.expired(job)) return 'Approval expired; ask Ada to propose a new job.';
-    if (job.approvalDigest !== binding(job)) return 'Job changed after approval was requested; propose it again.';
+    delete job.approvalNote; // a new attempt starts; every refusal below records its own note
+    if (cmd.job !== job.id || typeof cmd.approval !== 'string' || cmd.approval !== job.approvalId) return this.#refuse(job, 'mismatch', 'Approval does not match this job.');
+    if (this.expired(job)) return this.#refuse(job, 'expired', 'Approval expired; ask Ada to propose a new job.');
+    if (job.approvalDigest !== binding(job)) return this.#refuse(job, 'mismatch', 'Job changed after approval was requested; propose it again.');
     const record = readPin(this.stateDir);
     if (!record) return PIN_MESSAGE;
     this.pinFailures = this.pinFailures.filter((t) => this.now() - t < APPROVAL_MS);
-    if (this.pinFailures.length >= 5) return 'Too many incorrect PIN attempts; wait five minutes.';
-    if (!verifyPin(cmd.pin, record)) { this.pinFailures.push(this.now()); return 'Incorrect approval PIN.'; }
+    if (this.pinFailures.length >= MAX_PIN_TRIES) {
+      const message = this.#refuse(job, 'locked', 'Too many incorrect PIN attempts; wait five minutes.');
+      this.#auditPin(job, 'pin-locked attemptsLeft=0');
+      return message;
+    }
+    if (!verifyPin(cmd.pin, record)) {
+      this.pinFailures.push(this.now());
+      const message = this.#refuse(job, 'wrong-pin', 'Incorrect approval PIN.');
+      this.#auditPin(job, `pin-failed attemptsLeft=${job.approvalNote.attemptsLeft}`);
+      return message;
+    }
     // Re-read the allowlist and resolve the path before accepting the tap.
     const why = this.#unchanged(job);
     if (why) return why;

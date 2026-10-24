@@ -337,3 +337,57 @@ test('operation output is truncated to about 8 KB', () => {
   assert.ok(big.length < 8300);
   assert.match(big, /truncated at 8 KB/);
 });
+
+const approveCmd = (s, job, pin) => s.hub.handle(s.cmd('approve', { job: job.id, approval: job.approvalId, pin }));
+const auditLog = (s) => { try { return fs.readFileSync(path.join(s.state, 'fullmode-audit.log'), 'utf8'); } catch { return ''; } };
+
+test('approvalNote counts down 4, 3 ... 0 and locks with lockedUntil after five wrong PINs', async () => {
+  const s = setup();
+  const [job] = await s.propose([{ mode: 'full', folder: s.proj, agent: 'claude', prompt: 'x' }]);
+  approveCmd(s, job, '000000');
+  assert.deepEqual([job.approvalNote.reason, job.approvalNote.attemptsLeft, job.approvalNote.lockedUntil], ['wrong-pin', 4, null]);
+  assert.equal(job.approvalNote.at, s.clock.t);
+  approveCmd(s, job, '000000');
+  assert.deepEqual([job.approvalNote.reason, job.approvalNote.attemptsLeft], ['wrong-pin', 3]);
+  const first = s.clock.t;
+  for (let i = 0; i < 3; i++) approveCmd(s, job, '000000');
+  assert.deepEqual([job.approvalNote.reason, job.approvalNote.attemptsLeft, job.approvalNote.lockedUntil], ['locked', 0, first + APPROVAL_MS]);
+  assert.equal(job.status, 'awaiting-approval');
+  assert.match(approveCmd(s, job, PIN), /Too many/);
+  assert.equal(job.approvalNote.reason, 'locked');
+  assert.equal(job.approvalNote.attemptsLeft, 0);
+});
+
+test('approvalNote is cleared on success and not set as a PIN attempt for mismatch or expiry', async () => {
+  const s = setup();
+  const [job] = await s.propose([{ mode: 'full', folder: s.proj, agent: 'claude', prompt: 'x' }]);
+  approveCmd(s, job, '000000');
+  assert.ok(job.approvalNote);
+  s.hub.handle(s.cmd('approve', { job: job.id, approval: 'nope', pin: '000000' }));
+  assert.equal(job.approvalNote.reason, 'mismatch');
+  assert.equal(job.approvalNote.attemptsLeft, 4, 'a mismatch is not a PIN attempt');
+  assert.equal(s.policy.pinFailures.length, 1);
+  assert.equal(approveCmd(s, job, PIN), null);
+  assert.equal(job.approvalNote, undefined, 'success clears the note');
+  const j2 = (await s.propose([{ mode: 'full', folder: s.proj, agent: 'claude', prompt: 'y' }])).at(-1);
+  s.clock.t += APPROVAL_MS + 1;
+  s.policy.approve(j2, { job: j2.id, approval: j2.approvalId, pin: '000000' }); // policy-level: the hub would already have expired it
+  assert.equal(j2.approvalNote.reason, 'expired');
+  assert.equal(s.policy.pinFailures.length, 0, 'expiry adds no PIN attempt (the old failure aged out of the window)');
+});
+
+test('failed attempts are audited without any PIN; view() exposes only the safe note fields', async () => {
+  const s = setup();
+  const [job] = await s.propose([{ mode: 'full', folder: s.proj, agent: 'claude', prompt: 'x' }]);
+  approveCmd(s, job, '987654');
+  approveCmd(s, job, '111111');
+  const log = auditLog(s);
+  const lines = s.audit();
+  assert.deepEqual(lines.map((l) => l.outcome), ['pin-failed attemptsLeft=4', 'pin-failed attemptsLeft=3']);
+  assert.ok(lines.every((l) => l.jobId === job.id));
+  assert.ok(!log.includes('987654') && !log.includes('111111') && !log.includes(PIN));
+  job.approvalNote.pin = '987654'; job.approvalNote.hash = 'x'; // anything extra must never travel
+  const shown = s.hub.view().jobs.find((j) => j.id === job.id);
+  assert.deepEqual(Object.keys(shown.approvalNote).sort(), ['at', 'attemptsLeft', 'lockedUntil', 'reason']);
+  assert.ok(!JSON.stringify(s.hub.view()).includes('987654'));
+});

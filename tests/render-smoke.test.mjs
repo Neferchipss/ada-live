@@ -166,3 +166,13 @@ test('context bars, merged approvals line, folded attention and the expired/deni
   assert.match(r.html['act-hist-list'], /hist-h">Expired \/ denied/);
   assert.match(r.html['act-hist-list'], /class="lapsed"/);
 });
+
+test('a job carrying a wrong-pin note renders the retry tag and the page still unlocks', async () => {
+  const s = realistic();
+  s.chat.jobs[0].approvalNote = { reason: 'wrong-pin', at: now - 1000, attemptsLeft: 3, lockedUntil: null };
+  const r = await unlockWith(s);
+  assertUnlocked(r, 'wrong-pin note');
+  assert.match(r.html['chat-log'] + r.html['work-strip'], /appr-retry[^>]*>PIN incorrect · tap to retry/);
+  s.chat.jobs[0].approvalNote = { reason: 'locked', at: now - 1000, attemptsLeft: 0, lockedUntil: now + 200e3 };
+  assertUnlocked(await unlockWith(s), 'locked note');
+});

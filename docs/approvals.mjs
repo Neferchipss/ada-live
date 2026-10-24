@@ -59,3 +59,34 @@ export function newApprovals(jobs, seen, now) {
   for (const j of fresh) seen.add(j.id);
   return { fresh, seen };
 }
+
+// ---- wrong-PIN retry state, driven by job.approvalNote = {reason, at, attemptsLeft, lockedUntil} ----
+
+export const RETRY_TAG = 'PIN incorrect · tap to retry';
+export const EXPIRED_TEXT = 'Expired, ask Ada to propose it again';
+
+// Stable id for one refusal: a late message or snapshot from an older attempt has a different key.
+export const noteKey = (j) => (j?.approvalNote ? `${j.id}:${j.approvalNote.at}` : '');
+
+// Amber "tap to retry" tag shows only while the job is still open and the last refusal was a wrong PIN.
+export const needsPinRetry = (j, now) => j?.status === 'awaiting-approval' && j.approvalNote?.reason === 'wrong-pin' && isOpen(j, now);
+
+// What the dialog shows for a job. kind: 'none' | 'wrong-pin' | 'locked' | 'expired' | 'mismatch'.
+// locked is true while submitting must stay disabled; remainingMs is the lockout countdown.
+export function approvalMessage(j, now) {
+  if (!j || j.status === 'expired' || (j.status === 'awaiting-approval' && !isOpen(j, now))) return { kind: 'expired', text: EXPIRED_TEXT, locked: false, remainingMs: 0 };
+  const n = j.approvalNote;
+  if (!n || j.status !== 'awaiting-approval') return { kind: 'none', text: '', locked: false, remainingMs: 0 };
+  if (n.reason === 'locked' || (Number.isFinite(n.lockedUntil) && now < n.lockedUntil)) {
+    const remainingMs = Number.isFinite(n.lockedUntil) ? n.lockedUntil - now : 0;
+    if (remainingMs > 0) return { kind: 'locked', text: `Too many attempts · try again in ${countdown(remainingMs)}`, locked: true, remainingMs };
+    return { kind: 'none', text: '', locked: false, remainingMs: 0 };
+  }
+  if (n.reason === 'wrong-pin') {
+    const left = Math.max(0, n.attemptsLeft | 0);
+    return { kind: 'wrong-pin', text: `Incorrect PIN · ${left} ${left === 1 ? 'try' : 'tries'} left`, locked: false, remainingMs: 0 };
+  }
+  if (n.reason === 'expired') return { kind: 'expired', text: EXPIRED_TEXT, locked: false, remainingMs: 0 };
+  if (n.reason === 'mismatch') return { kind: 'mismatch', text: 'This approval changed. Ask Ada to propose it again.', locked: false, remainingMs: 0 };
+  return { kind: 'none', text: '', locked: false, remainingMs: 0 };
+}

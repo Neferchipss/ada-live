@@ -2,9 +2,9 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals } from './approvals.mjs?v=ctx-1';
-import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=ctx-1';
-import { ctxView, ctxNeedsFresh } from './context.mjs?v=ctx-1';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=pin-1';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=pin-1';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=pin-1';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -587,7 +587,8 @@ function tickClock() {
 let chatKey = '';               // skip re-rendering when nothing changed
 const outbox = new Map();       // cid -> { text, t, failed, why }
 const openJobs = new Set();
-let approvalTarget = null; // Job id + approval challenge only; never a PIN.
+let approvalTarget = null; // Job id + approval challenge + refusal key only; never a PIN.
+let approvalTimer = null; // 1s tick while the PIN dialog is open (expiry + lockout countdowns)
 const pendingJobActions = new Set();
 let brainPref = { agent: 'claude', model: '' };
 try { brainPref = { ...brainPref, ...JSON.parse(localStorage.getItem('ada-brain') || '{}') }; } catch {}
@@ -1009,7 +1010,9 @@ function jobInstructions(j) {
 function approvalControls(j) {
   if (j.status !== 'awaiting-approval') return '';
   const enabled = wsLive && approvalOpen(j) && data?.chat?.fullModePinSet && !pendingJobActions.has(j.id);
+  const retry = needsPinRetry(j, Date.now()) ? `<button class="appr-retry" data-approve="${esc(j.id)}" type="button">${RETRY_TAG}</button>` : '';
   return `<div class="approval-info">
+    ${retry}
     <p class="tl-warn" data-approval-expires="${j.approvalExpiresAt}">${approvalOpen(j) ? `Approval expires in ${dur(j.approvalExpiresAt - Date.now())}.` : 'Approval expired. Ask Ada to propose the job again.'}</p>
     ${!data?.chat?.fullModePinSet ? '<p class="tl-warn">Set an approval PIN on the laptop: <code>node tools/set-fullmode-pin.mjs</code></p>' : ''}
     <div class="job-buttons"><button class="tl-approve" data-approve="${esc(j.id)}" type="button" ${enabled ? '' : 'disabled'}>Approve with PIN</button><button class="tl-cancel" data-deny="${esc(j.id)}" type="button" ${wsLive && approvalOpen(j) && !pendingJobActions.has(j.id) ? '' : 'disabled'}>Deny</button></div>
@@ -1081,6 +1084,7 @@ function stripRow(it) {
   const from = j.status === 'running' ? j.startedAt : j.createdAt;
   const since0 = Number.isFinite(from) ? from : Date.now();
   const review = j.status === 'awaiting-approval' ? `<button class="ws-review" data-review="${esc(j.id)}" type="button">Review</button>` : '';
+  const retry = needsPinRetry(j, Date.now()) ? `<button class="appr-retry" data-approve="${esc(j.id)}" type="button">${RETRY_TAG}</button>` : '';
   const kill = mode !== 'safe' && j.status === 'running' ? `<button class="tl-cancel" data-kill="${esc(j.id)}" type="button" ${wsLive ? '' : 'disabled'}>Kill job</button>` : '';
   return `<div class="ws-row" role="button" tabindex="0" data-s="${esc(j.status)}"${held ? ' data-held="1"' : ''} data-mode="${mode}" data-agent="${esc(j.agent)}" data-focus="${esc(j.id)}">
     <div class="ws-line">
@@ -1092,7 +1096,7 @@ function stripRow(it) {
       </span>
       <span class="tl-time"><span data-since="${since0}">${since(since0)}</span></span>
     </div>
-    ${kill}${review}${holdControls(j)}
+    ${kill}${retry}${review}${holdControls(j)}
   </div>`;
 }
 
@@ -1165,7 +1169,7 @@ function renderStrip() {
   const jobs = items.filter((i) => i.job).map((i) => i.job);
   const waiting = jobs.some((j) => j.status === 'awaiting-approval');
   const open = stripPref; // rows only on tap; a waiting approval does not grow the header (its line is amber and opens the approvals sheet)
-  const key = JSON.stringify([items, jobs.map(approvalOpen), wsLive, data?.chat?.fullModePinSet, open]);
+  const key = JSON.stringify([items, jobs.map((j) => [approvalOpen(j), needsPinRetry(j, Date.now())]), wsLive, data?.chat?.fullModePinSet, open]);
   if (key === stripKey) { renderApprovals(); return; }
   stripKey = key;
 
@@ -1229,7 +1233,7 @@ function renderApprovals() {
   const soon = soonestExpiry(jobs, now);
   document.querySelectorAll('[data-appr-left]').forEach((el) => { el.textContent = soon ? countdown(soon - now) : ''; });
 
-  const key = JSON.stringify([pending.map((j) => [j.id, approvalOpen(j)]), hist.ran.map((j) => [j.id, j.status]), hist.lapsed.map((j) => j.id), wsLive, data?.chat?.fullModePinSet]);
+  const key = JSON.stringify([pending.map((j) => [j.id, approvalOpen(j), noteKey(j)]), hist.ran.map((j) => [j.id, j.status]), hist.lapsed.map((j) => j.id), wsLive, data?.chat?.fullModePinSet]);
   if (key === apprKey) return;
   apprKey = key;
   const act = document.activeElement;
@@ -1387,7 +1391,7 @@ async function sendChat(text, cid = rid()) {
 }
 
 function setSheet(id, open) {
-  if (id === '#approval-sheet' && !open) { $('#approval-pin').value = ''; approvalTarget = null; }
+  if (id === '#approval-sheet' && !open) { $('#approval-pin').value = ''; clearTimeout(approvalTarget?.sendTimer); approvalTarget = null; clearInterval(approvalTimer); approvalTimer = null; }
   $(id).hidden = !open;
   document.body.classList.toggle('sheet-open', !!document.querySelector('.sheet:not([hidden])'));
 }
@@ -1404,22 +1408,44 @@ function syncJobActions() {
       : el.dataset.kill ? j?.status === 'running' && jobMode(j) !== 'safe' : approvalOpen(j) && (!el.dataset.approve || data?.chat?.fullModePinSet);
     el.disabled = !wsLive || !allowed || pendingJobActions.has(id);
   });
-  if (approvalTarget) {
-    const j = currentJob(approvalTarget.id);
-    const ready = wsLive && data?.chat?.fullModePinSet && approvalOpen(j) && j.approvalId === approvalTarget.approval;
-    $('#approval-submit').disabled = !ready;
-    if (!ready) {
-      $('#approval-pin').value = '';
-      $('#approval-error').textContent = !wsLive ? 'Laptop not connected. Reconnect before approving.' : 'This approval is no longer available. Close and review the current job card.';
-    }
+  if (approvalTarget) syncApprovalDialog();
+}
+
+// Keeps the PIN dialog in step with the job. State is keyed on job id + approvalNote.at, so a late
+// message or snapshot from an older attempt cannot close the dialog or replace the newest result.
+function syncApprovalDialog() {
+  const target = approvalTarget, now = Date.now();
+  const j = currentJob(target.id);
+  if (j && j.approvalId === target.approval && !['awaiting-approval', 'expired', 'denied'].includes(j.status)) { setSheet('#approval-sheet', false); return; } // approved: it moved on
+  const gone = !j || j.approvalId !== target.approval;
+  const msg = approvalMessage(j, now);
+  if (target.submitting && noteKey(j) !== target.baseKey) { // the laptop answered this attempt
+    target.submitting = false;
+    clearTimeout(target.sendTimer);
+    target.refocus = true;
   }
+  const ready = wsLive && data?.chat?.fullModePinSet && !gone && approvalOpen(j) && !msg.locked && !target.submitting;
+  $('#approval-submit').disabled = !ready;
+  const expiry = $('#approval-expiry');
+  if (!gone && j.approvalExpiresAt) {
+    expiry.dataset.approvalExpires = j.approvalExpiresAt; expiry.hidden = false;
+    expiry.textContent = j.approvalExpiresAt > now ? `Approval expires in ${dur(j.approvalExpiresAt - now)}.` : 'Approval expired. Ask Ada to propose the job again.';
+  } else expiry.hidden = true;
+  const err = $('#approval-error');
+  err.textContent = !wsLive ? 'Laptop not connected. Reconnect before approving.'
+    : gone ? 'This approval is no longer available. Close and review the current job card.'
+    : target.submitting ? 'Checking PIN…' : target.notice || msg.text;
+  err.dataset.kind = target.submitting ? 'busy' : msg.kind;
+  if (!ready) $('#approval-pin').value = '';
+  if (target.refocus && ready) { target.refocus = false; $('#approval-pin').focus(); }
 }
 
 function openApproval(j) {
   if (!wsLive || !approvalOpen(j) || !data?.chat?.fullModePinSet) return;
-  approvalTarget = { id: j.id, approval: j.approvalId };
+  approvalTarget = { id: j.id, approval: j.approvalId, baseKey: noteKey(j), submitting: false, notice: '', sendTimer: null, refocus: false };
   $('#approval-pin').value = '';
-  $('#approval-error').textContent = '';
+  clearInterval(approvalTimer);
+  approvalTimer = setInterval(() => { if (approvalTarget) syncJobActions(); }, 1000);
   $('#approval-title').textContent = `Approve ${jobMode(j).toUpperCase()} job`;
   $('#approval-review').textContent = `${j.title}\nFolder: ${j.folder}\nAgent: ${jobMode(j) === 'ops' ? 'Collector' : brainLabel(j)}\n\n${jobMode(j) === 'ops' ? operationText(j) : j.prompt || ''}`;
   setSheet('#approval-sheet', true);
@@ -1495,15 +1521,22 @@ function bindChat() {
     const target = approvalTarget;
     const j = target && currentJob(target.id);
     if (!j || !approvalOpen(j) || j.approvalId !== target.approval || !wsLive) { syncJobActions(); return; }
+    if (target.submitting || approvalMessage(j, Date.now()).locked) { syncJobActions(); return; }
     let pin = $('#approval-pin').value;
     $('#approval-pin').value = '';
     if (!pin) { $('#approval-error').textContent = 'Enter your approval PIN.'; return; }
-    $('#approval-submit').disabled = true;
+    target.baseKey = noteKey(j); target.notice = ''; target.submitting = true;
+    syncJobActions();
     try {
       await sendCmd({ type: 'approve', id: rid(), job: target.id, approval: target.approval, pin });
-      setSheet('#approval-sheet', false);
+      // The dialog stays open: it closes when the job leaves awaiting-approval, or shows the refusal from approvalNote.
+      target.sendTimer = setTimeout(() => {
+        if (approvalTarget !== target || !target.submitting) return;
+        target.submitting = false; target.refocus = true; target.notice = 'No answer from the laptop. Re-enter the PIN to try again.';
+        syncJobActions();
+      }, 15000);
     } catch {
-      $('#approval-error').textContent = 'Approval was not sent. Re-enter the PIN to try again.';
+      target.submitting = false; target.refocus = true; target.notice = 'Approval was not sent. Re-enter the PIN to try again.';
       syncJobActions();
     } finally { pin = ''; }
   });
