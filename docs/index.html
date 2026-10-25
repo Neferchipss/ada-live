@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=sv-6">
+  <link rel="stylesheet" href="style.css?v=sv-7">
 </head>
 <body>
   <!-- Locked: nothing below is readable until the password decrypts the feed. -->
@@ -121,7 +121,7 @@
       <div id="act-tiles" class="tiles"></div>
       <div id="act-attn"></div>
       <div id="act-now"></div>
-      <details class="appr-recent" id="act-hist" hidden><summary>Past approvals</summary><ul id="act-hist-list"></ul></details>
+      <details class="appr-recent" id="act-hist" hidden><summary id="act-hist-sum">Past approvals</summary><ul id="act-hist-list"></ul></details>
       <div id="act-projects"></div>
       <details class="chg" id="act-full">
         <summary><h2 class="sec">Full timeline</h2></summary>
@@ -226,6 +226,6 @@
       setTimeout(function () { if (!window.__adaBooted) say("Page failed to load (the script did not start). Reload, or clear this site's cache."); }, 4000);
     })();
   </script>
-  <script src="app.js?v=sv-6" type="module"></script>
+  <script src="app.js?v=sv-7" type="module"></script>
 </body>
 </html>

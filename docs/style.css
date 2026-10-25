@@ -275,10 +275,10 @@ a.kind:active { opacity: 0.7; }
 /* ---------- ada chat ---------- */
 /* Native controls look different everywhere; start the chat's from zero. */
 .chat-view button, .chat-view textarea, .sheet button { -webkit-appearance: none; appearance: none; font: inherit; color: inherit; margin: 0; }
-.chat-head { position: sticky; top: 0; z-index: 8; display: flex; align-items: center; gap: 10px; margin: 0 -16px; padding: calc(8px + env(safe-area-inset-top, 0px)) 16px 8px;
+.chat-head { position: sticky; top: 0; z-index: 8; display: flex; align-items: center; gap: 10px; margin: 0 -16px; padding: calc(4px + env(safe-area-inset-top, 0px)) 16px 4px;
   background: var(--bg); border-bottom: 1px solid var(--line); box-shadow: 0 8px 12px -8px rgba(0, 0, 0, 0.7); }
 .ch-av, .ada-av { display: grid; place-items: center; border-radius: 50%; color: var(--red); background: var(--red-soft); flex: none; }
-.ch-av { width: 36px; height: 36px; } .ch-av svg { width: 18px; height: 18px; }
+.ch-av { width: 32px; height: 32px; } .ch-av svg { width: 18px; height: 18px; }
 .ch-title { display: grid; flex: 1; min-width: 0; line-height: 1.2; }
 .ch-title b { font-size: 16px; letter-spacing: 0.02em; }
 .ch-title span { font: 11px var(--mono); color: var(--dim); }
@@ -374,12 +374,13 @@ body.in-chat { overflow: hidden; }
 #approval-submit { justify-self: stretch; border-radius: 12px; padding: 12px; }
 
 /* Live worker strip, pinned in the chat header */
-.chat-head { flex-wrap: wrap; row-gap: 6px; }
+.chat-head { flex-wrap: wrap; row-gap: 2px; }
 .ch-title b small { font: 600 11px var(--mono); color: var(--amber); letter-spacing: 0; margin-left: 2px; }
 .tabs button { position: relative; }
 .tab-badge { position: absolute; top: 0; left: calc(50% + 6px); min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 999px; background: var(--amber); color: var(--bg); font: 700 10px/16px var(--mono); font-style: normal; text-align: center; }
 .tab-badge[hidden], .work-strip[hidden] { display: none; }
-.work-strip { flex: 1 0 100%; display: grid; gap: 4px; min-width: 0; }
+.work-strip { flex: 1 0 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; max-width: 100%; }
+.ws-head { min-width: 0; }
 .ws-head { display: flex; gap: 6px; align-items: stretch; }
 .ws-sum { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; min-height: 32px; box-sizing: border-box; border: 1px solid var(--line) !important; border-radius: 999px; background: var(--bg-2) !important; padding: 4px 12px; font: 12px var(--mono) !important; color: var(--muted) !important; text-align: left; cursor: pointer; }
 .ws-sum[data-s='awaiting-approval'] { border-color: rgba(240, 164, 58, .6) !important; color: var(--amber) !important; }
@@ -642,7 +643,7 @@ div.attn-row { cursor: default; }
 .ctx-bar { display: block; width: 100%; height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; }
 .ctx-bar b { display: block; height: 100%; background: var(--bar); border-radius: 4px; }
 .ctx-t { white-space: nowrap; }
-.ch-ctx { display: flex; align-items: center; gap: 8px; margin: 3px 0 2px; min-width: 0; }
+.ch-ctx { display: flex; align-items: center; gap: 8px; margin: 1px 0 0; min-width: 0; }
 .ch-ctx[hidden] { display: none; }
 .ch-model { font: 11px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .ctx-fresh { font: 600 11px var(--mono); color: var(--amber); cursor: pointer; white-space: nowrap; }
@@ -655,11 +656,14 @@ div.attn-row { cursor: default; }
 .now-src { font: 11px var(--mono); letter-spacing: 0; text-transform: none; color: var(--muted); }
 .sec-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .sec-row .attn-all { float: none; margin-left: 0; }
-#act-hist > summary { font-size: 11px; color: var(--dim); }
+#act-hist > summary { font-size: 11px; color: var(--dim); list-style: none; justify-content: space-between; }
+#act-hist > summary::-webkit-details-marker { display: none; }
+#act-hist > summary::after { content: '›'; font-size: 16px; line-height: 1; transition: transform .15s; }
+#act-hist[open] > summary::after { transform: rotate(90deg); }
 .pj-sub .ctx { align-self: center; }
 
 /* ---------- session viewer: switcher chips, banner, read-only transcript ---------- */
-.sv-bar { flex: 1 0 100%; display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; padding: 2px 0; min-width: 0; }
+.sv-bar { flex: 1 0 100%; display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; padding: 0; min-width: 0; }
 .sv-bar::-webkit-scrollbar { display: none; }
 .sv-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: 70vw; border: 1px solid var(--line) !important; background: var(--bg-2) !important; border-radius: 999px; padding: 5px 10px; font: 12px var(--mono) !important; color: var(--muted) !important; cursor: pointer; white-space: nowrap; }
 .sv-chip.on { border-color: rgba(224, 38, 63, .6) !important; background: var(--red-soft) !important; color: var(--text) !important; }

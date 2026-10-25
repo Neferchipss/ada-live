@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { buildSummary, parseArgs, redact, shotName, stamp, DEFAULT_URL, ALL_TABS } from '../tools/ui-check.mjs';
+import { scrollsX, isForbiddenControl, buildSummary, parseArgs, redact, shotName, stamp, DEFAULT_URL, ALL_TABS } from '../tools/ui-check.mjs';
 
 const PASS = 'correct-horse-battery';
 
@@ -51,4 +51,28 @@ test('summary caps lists at 5 messages and truncates long ones', () => {
   assert.equal(s.consoleErrors.first.length, 5);
   assert.ok(s.consoleErrors.first.every((m) => m.length <= 300));
   assert.ok(JSON.stringify(s).length < 8000);
+});
+
+test('map and session shots are named like the other tabs', () => {
+  assert.equal(shotName('20261024-070509', 'map'), 'uicheck-20261024-070509-map.png');
+  assert.equal(shotName('20261024-070509', 'session'), 'uicheck-20261024-070509-session.png');
+});
+
+test('only horizontally scrollable containers are exempt from the overflow check', () => {
+  assert.equal(scrollsX('auto'), true);
+  assert.equal(scrollsX('scroll'), true);
+  assert.equal(scrollsX('visible'), false);
+  assert.equal(scrollsX('hidden'), false);
+});
+
+test('state-changing controls are never clickable; navigation chips are', () => {
+  for (const s of ['[data-approve]', '#appr-batch-approve', '.deny', '#composer-send', '#attach-paperclip', 'input[data-pick]', '#kill', '.run-anyway']) assert.equal(isForbiddenControl(s), true, s);
+  for (const s of ['#tabs button[data-tab="chat"]', '#sv-bar [data-sv-map]', '#map-close', '#sv-bar .sv-chip[data-sv]', '#sv-bar [data-sv-ada]']) assert.equal(isForbiddenControl(s), false, s);
+});
+
+test('summary keeps map and session facts compact and redacted', () => {
+  const s = buildSummary({ map: { title: `Chats map ${PASS}`, nodes: 4 }, session: { banner: 'Viewing x', rows: 7 } }, [PASS]);
+  assert.equal(s.map.nodes, 4);
+  assert.equal(s.session.rows, 7);
+  assert.ok(!JSON.stringify(s).includes(PASS));
 });

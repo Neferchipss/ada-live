@@ -28,7 +28,7 @@ async function unlockWith(snap, { typed = 'test-pass', sealedWith = 'test-pass',
       btn: d.els.get('unlock').textContent,
       errors: bar.hidden ? [] : bar.children.map((c) => c.textContent),
       html: Object.fromEntries(['chat-ctx', 'work-strip', 'act-attn', 'act-hist-list', 'act-tiles', 'act-now', 'act-projects', 'work', 'chat-log'].map((id) => [id, d.els.get(id).innerHTML])),
-      hidden: { ctx: d.els.get('chat-ctx').hidden, toast: d.els.get('toast').hidden },
+      hidden: { ctx: d.els.get('chat-ctx').hidden, toast: d.els.get('toast').hidden, hist: d.els.get('act-hist').hidden, histSum: d.els.get('act-hist-sum').textContent },
       extra: after ? await after(d) : undefined,
     };
   } finally { d.restore(); }
@@ -171,6 +171,17 @@ test('context bars, merged approvals line, folded attention and the expired/deni
   // history: denied + expired under the muted group
   assert.match(r.html['act-hist-list'], /hist-h">Expired \/ denied/);
   assert.match(r.html['act-hist-list'], /class="lapsed"/);
+  assert.equal(r.hidden.hist, false);
+  assert.match(r.hidden.histSum, /^Past approvals · \d+$/, 'collapsed summary carries its count');
+});
+
+test('empty Activity sections render nothing at all: no heading, no rows', async () => {
+  const s = realistic();
+  s.chat.jobs = []; s.tasks = []; s.sessions = []; s.projects = []; s.activeMap = []; s.journal = []; s.gitActivity = []; s.limits = []; s.timeline = []; s.accounts = [];
+  const r = await unlockWith(s);
+  assertUnlocked(r, 'empty');
+  for (const id of ['act-attn', 'act-now', 'act-projects']) assert.equal(r.html[id], '', `${id} is empty`);
+  assert.equal(r.hidden.hist, true, 'Past approvals is hidden when there is nothing');
 });
 
 test('collapsed strip names the most recent job with its timer and summarises the rest; approvals keep the amber countdown', async () => {

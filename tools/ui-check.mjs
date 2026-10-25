@@ -57,6 +57,12 @@ export function redact(text, secrets = []) {
   return s;
 }
 
+// True when a computed overflow-x value makes an element a deliberate horizontal scroller (chip rows etc.).
+export const scrollsX = (overflowX) => overflowX === 'auto' || overflowX === 'scroll';
+
+// Navigation-only guard: selectors of state-changing controls the checker must never click.
+export const isForbiddenControl = (selector = '') => /approve|deny|kill|send|run-anyway|select|pick|attach|paperclip|upload|delete|remove|reset|stop|dismiss|submit|unlock|retry/i.test(String(selector));
+
 const limitList = (list, secrets) => ({
   count: list.length,
   first: list.slice(0, LIST_MAX).map((m) => redact(String(m).replace(/\s+/g, ' ').trim().slice(0, MSG_MAX), secrets)),
@@ -77,6 +83,8 @@ export function buildSummary(r, secrets = []) {
       wideElements: limitList(r.overflow?.wideElements || [], secrets),
     },
     suspiciousText: limitList(r.suspiciousText || [], secrets),
+    ...(r.map ? { map: { title: redact(r.map.title, secrets).slice(0, 80), nodes: r.map.nodes | 0 } } : {}),
+    ...(r.session ? { session: { banner: redact(r.session.banner, secrets).slice(0, 160), rows: r.session.rows | 0 } } : {}),
     tabs: (r.tabs || []).slice(0, 8).map((t) => ({ tab: t.tab, visible: !!t.visible, textChars: t.textChars | 0 })),
   };
   // Last line of defence: if a secret somehow survived inside the JSON, withhold the report.
@@ -136,12 +144,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Page-side probe: layout facts and suspicious text for what is currently visible.
 const PROBE = `(() => {
+  const scrollsX = ${scrollsX.toString()};
+  const inScroller = (el) => { for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) if (scrollsX(getComputedStyle(p).overflowX)) return true; return false; };
   const vw = document.documentElement.clientWidth;
   const sel = (el) => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.') : '');
   const visible = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
   const wide = [];
   for (const el of document.querySelectorAll('body *')) {
-    if (el.closest('[hidden]') || !visible(el)) continue;
+    if (el.closest('[hidden]') || !visible(el) || inScroller(el)) continue;
     const r = el.getBoundingClientRect();
     if (r.right > innerWidth + 1 || r.width > innerWidth + 1) wide.push(sel(el) + ' w=' + Math.round(r.width) + ' right=' + Math.round(r.right));
     if (wide.length >= 20) break;
@@ -258,6 +268,30 @@ export async function run(opts, io = { log: (m) => process.stderr.write(m + '\n'
       if (probe.scrollWidth > probe.clientWidth) result.overflow.horizontal.push(`${tab}: scrollWidth ${probe.scrollWidth} > clientWidth ${probe.clientWidth}`);
       result.overflow.wideElements.push(...probe.wide.map((w) => `${tab}: ${w}`));
       result.suspiciousText.push(...probe.sus.map((s) => `${tab}: ${s}`));
+    }
+    // Chat extras (navigation only): the Map sheet, then one session viewer if a non-Ada chip exists, then back to Ada.
+    if (opts.tabs.includes('chat')) {
+      const click = async (sel) => {
+        if (isForbiddenControl(sel)) return false;
+        return evalJs(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return false; b.click(); return true; })()`);
+      };
+      if (await click('#tabs button[data-tab="chat"]')) {
+        await sleep(600);
+        if (await click('#sv-bar [data-sv-map]')) {
+          await sleep(900);
+          await shot('map');
+          result.map = await evalJs(`(() => { const t = document.querySelector('#map-title'); return { title: t ? t.textContent : '', nodes: document.querySelectorAll('#map-body .mp-n').length }; })()`);
+          await click('#map-close');
+          await sleep(500);
+        } else io.log('no Map chip');
+        if (await click('#sv-bar .sv-chip[data-sv]')) {
+          await sleep(2500);
+          await shot('session');
+          result.session = await evalJs(`(() => { const b = document.querySelector('#sv-banner'); return { banner: b && !b.hidden ? b.innerText.replace(/\s+/g, ' ').slice(0, 160) : '', rows: document.querySelectorAll('#chat-log > li').length }; })()`);
+          await click('#sv-bar [data-sv-ada]');
+          await sleep(500);
+        }
+      }
     }
     result.ok = true;
   } finally {

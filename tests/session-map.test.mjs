@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSessionMap, activeCount } from '../docs/session-map.mjs';
+import { buildSessionMap, activeCount, ribbonSessions } from '../docs/session-map.mjs';
 
 const now = Date.UTC(2026, 9, 24, 12, 0, 0);
 const S = (id, over = {}) => ({ agent: 'claude', session: `${id}`.padEnd(8, '0'), title: `t-${id}`, project: 'proj', subfolder: '', source: 'job', status: 'working', startedAt: now - 9e5, lastAt: now - 1000, ...over });
@@ -91,4 +91,16 @@ test('leaf meta carries what the page draws; missing fields and bad rows are tol
 test('duplicate agent|session rows appear once', () => {
   const t = buildSessionMap(data([S('aaaaaaa1'), S('aaaaaaa1')]), now);
   assert.equal(t.children[0].children.length, 1);
+});
+
+test('ribbonSessions: only live chats; the viewed chat stays (finished) until the user leaves it', () => {
+  const list = [S('a'), S('b', { status: 'blocked' }), S('c', { status: 'idle' }), S('d', { status: 'failed' }), S('a')];
+  const ids = (r) => r.map((s) => s.session);
+  assert.deepEqual(ids(ribbonSessions(list, null)), ['a'.padEnd(8, '0'), 'b'.padEnd(8, '0')]);
+  const viewing = ribbonSessions(list, { agent: 'claude', session: 'c'.padEnd(8, '0') });
+  assert.deepEqual(ids(viewing), ['a'.padEnd(8, '0'), 'b'.padEnd(8, '0'), 'c'.padEnd(8, '0')]);
+  assert.deepEqual(viewing.map((s) => s.finished), [false, false, true]);
+  assert.deepEqual(ids(ribbonSessions(list, null)).includes('c'.padEnd(8, '0')), false, 'chip drops once the user leaves');
+  assert.deepEqual(ribbonSessions(undefined, null), []);
+  assert.deepEqual(ribbonSessions([null, {}, { agent: 'x' }], null), []);
 });

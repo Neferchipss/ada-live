@@ -2,10 +2,10 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG, selectable, pruneSelection, selectAll, selectOps, toggleSelection, selectionView, batchEntries, batchMessage } from './approvals.mjs?v=sv-6';
-import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-6';
-import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-6';
-import { buildSessionMap, activeCount, RECENT_ID } from './session-map.mjs?v=sv-6';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG, selectable, pruneSelection, selectAll, selectOps, toggleSelection, selectionView, batchEntries, batchMessage } from './approvals.mjs?v=sv-7';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-7';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-7';
+import { buildSessionMap, activeCount, RECENT_ID, ribbonSessions } from './session-map.mjs?v=sv-7';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -997,6 +997,7 @@ function renderCtx() {
   const c = data?.chat?.thread?.context;
   const v = c && c.agent === brainPref.agent ? ctxView(c) : null;
   el.hidden = !v;
+  $('#chat-sub').hidden = !!v && !!data?.chat?.memory; // the "memory loaded" note is dropped when the ctx line is there; "offline" always shows
   el.innerHTML = v ? `${c.model ? `<span class="ch-model">${esc(c.model)}</span>` : ''}${ctxBar(c)}${ctxNeedsFresh(v) ? ' <button type="button" class="link ctx-fresh" data-fresh>Fresh context</button>' : ''}` : '';
 }
 
@@ -1269,7 +1270,9 @@ function renderApprovals() {
   $('#appr-batch-deny').textContent = `Deny ${sv.n}`;
   $('#appr-batch-approve').disabled = !wsLive || !data?.chat?.fullModePinSet;
   $('#appr-batch-deny').disabled = !wsLive;
-  $('#act-hist').hidden = !hist.ran.length && !hist.lapsed.length; // no rows, no section
+  const histN = hist.ran.length + hist.lapsed.length;
+  $('#act-hist').hidden = !histN; // no rows, no section: nothing renders, no heading, no margin
+  $('#act-hist-sum').textContent = `Past approvals · ${histN}`;
   const histRow = (j, cls = '') => {
     const t = j.endedAt || j.startedAt || j.createdAt;
     return `<li${cls ? ` class="${cls}"` : ''}><span>${modeBadge(j)}${esc(j.title)}</span><em>${esc(outcomeLabel(j))}</em><time data-ago="${t}">${ago(t)}</time></li>`;
@@ -1341,7 +1344,7 @@ function renderChat() {
   if (key === chatKey) return;
   chatKey = key;
 
-  $('#chat-sub').textContent = `${chat.memory ? 'memory loaded' : 'memory offline'} · safe by default`;
+  $('#chat-sub').textContent = chat.memory ? 'memory loaded' : 'memory offline';
   const chip = $('#brain-btn');
   chip.innerHTML = `<i data-agent="${esc(brainPref.agent)}"></i>${esc(brainLabel(brainPref))}<svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>`;
   const models = chat.brains?.[brainPref.agent] || [''];
@@ -1774,10 +1777,10 @@ function svChip(s) {
   const on = svSel && svSel.agent === s.agent && svSel.session === s.session;
   const where = s.project ? ` · ${s.project}${s.subfolder ? ` › ${s.subfolder}` : ''}` : '';
   const pct = v && v.pct !== null ? `<span class="sv-pct${v.level ? ` ${v.level}` : ''}">${v.pct}%</span>` : '';
-  return `<button type="button" class="sv-chip${on ? ' on' : ''}" data-sv="${esc(svId(s))}" data-s="${esc(s.status)}" data-agent="${esc(s.agent)}" title="${esc(label + where)}"><i class="sv-dot"></i><span class="sv-t">${esc(label.length > 24 ? `${label.slice(0, 23)}…` : label)}</span><span class="sv-tag">${esc(SV_SRC[s.source] || s.source || '')}</span>${pct}</button>`;
+  return `<button type="button" class="sv-chip${on ? ' on' : ''}" data-sv="${esc(svId(s))}" data-s="${esc(s.status)}" data-agent="${esc(s.agent)}" title="${esc(label + where)}"><i class="sv-dot"></i><span class="sv-t">${esc(label.length > 24 ? `${label.slice(0, 23)}…` : label)}</span><span class="sv-tag">${esc(s.finished ? 'finished' : SV_SRC[s.source] || s.source || '')}</span>${pct}</button>`;
 }
 
-// The row of chips under the chat header: Ada first, then active sessions, then a muted "Recent" group.
+// The row of chips under the chat header: Ada, Map, then only the active chats (plus the viewed one, marked finished).
 function renderSwitcher() {
   const el = $('#sv-bar');
   let list = svList();
@@ -1788,8 +1791,8 @@ function renderSwitcher() {
   if (key === el.dataset.k) return;
   el.dataset.k = key;
   el.hidden = !list.length;
-  const act = list.filter((s) => svLive(s.status)), rest = list.filter((s) => !svLive(s.status));
-  el.innerHTML = `<button type="button" class="sv-chip sv-ada${svSel ? '' : ' on'}" data-sv-ada><span class="sv-t">Ada</span></button><button type="button" class="sv-chip sv-map" data-sv-map aria-label="Chats map"><span class="sv-t">Map</span></button>${act.map(svChip).join('')}${rest.length ? `<span class="sv-sep">Recent</span>${rest.map(svChip).join('')}` : ''}`;
+  const act = ribbonSessions(list, svSel);
+  el.innerHTML = `<button type="button" class="sv-chip sv-ada${svSel ? '' : ' on'}" data-sv-ada><span class="sv-t">Ada</span></button><button type="button" class="sv-chip sv-map" data-sv-map aria-label="Chats map"><span class="sv-t">Map</span></button>${act.map(svChip).join('')}`;
 }
 
 // Banner, switcher and the composer/actions swap. Cheap enough to run on every chat render.

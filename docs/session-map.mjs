@@ -1,7 +1,7 @@
 // Pure model for the "Chats map": every chat as a branching tree. No DOM, no globals.
 //   Ada (root) > project > folder (subfolder path segments) > session leaf, then a "Recent" branch of the same shape
 //   holding sessions that finished within the last 24h. Built only from the snapshot's chat.sessions list.
-import { projectOf, subOf, DAY } from './activity-model.mjs?v=sv-6';
+import { projectOf, subOf, DAY } from './activity-model.mjs?v=sv-7';
 
 export const OTHER_LABEL = 'Other';
 export const RECENT_ID = 'recent';
@@ -103,3 +103,21 @@ export function buildSessionMap(data, now = Date.now()) {
 
 // Flat count of leaves that are live, for the sheet title.
 export const activeCount = (tree) => num(tree?.meta?.live);
+
+// Chats on the switcher ribbon: only the active ones (same isLive the Map uses), plus the one being viewed even if it has
+// just finished (so it stays put with a "finished" note until the user leaves it). Everything else lives in the Map.
+// `list` is the snapshot's session list; `sel` is { agent, session } or null. Returns [{ ...session, finished }].
+export function ribbonSessions(list, sel) {
+  const seen = new Set();
+  const out = [];
+  for (const s of arr(list)) {
+    if (!s || typeof s.session !== 'string' || !s.session) continue;
+    const k = `${s.agent}|${s.session}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const live = isLive(s.status);
+    const viewed = !!sel && sel.agent === s.agent && sel.session === s.session;
+    if (live || viewed) out.push({ ...s, finished: !live });
+  }
+  return out;
+}

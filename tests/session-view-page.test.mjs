@@ -66,28 +66,37 @@ async function boot({ reply = () => null, chat = {} } = {}) {
 }
 
 test('the page carries the new cache-bust and the viewer elements', () => {
-  assert.match(APP, /\?v=sv-6/);
+  assert.match(APP, /\?v=sv-7/);
   const html = fs.readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8');
   for (const id of ['sv-bar', 'sv-banner', 'sv-actions']) assert.match(html, new RegExp(`id="${id}"`));
-  assert.match(html, /app\.js\?v=sv-6/);
-  assert.match(html, /style\.css\?v=sv-6/);
+  assert.match(html, /app\.js\?v=sv-7/);
+  assert.match(html, /style\.css\?v=sv-7/);
 });
 
-test('switcher: Ada first, active session with live state and ctx %, Recent group, titles escaped', async () => {
+test('switcher: Ada, Map, then only active chats; no Recent label and no finished chips', async () => {
   const b = await boot();
   try {
     const bar = b.el('sv-bar');
     assert.equal(bar.hidden, false);
     const html = bar.innerHTML;
-    assert.ok(html.indexOf('data-sv-ada') < html.indexOf(`data-sv="claude|${SID}"`));
-    assert.ok(html.indexOf(`data-sv="claude|${SID}"`) < html.indexOf('Recent'));
-    assert.ok(html.indexOf('Recent') < html.indexOf(`data-sv="codex|${OTHER}"`));
+    assert.ok(html.indexOf('data-sv-ada') < html.indexOf('data-sv-map'));
+    assert.ok(html.indexOf('data-sv-map') < html.indexOf(`data-sv="claude|${SID}"`));
+    assert.ok(!html.includes('Recent') && !html.includes('sv-sep'));
+    assert.ok(!html.includes(`claude|${OTHER}`) && !html.includes(`codex|${OTHER}`), 'idle session is not on the ribbon');
     assert.match(html, /data-s="working"/);
     assert.match(html, /Job<\/span>/);
-    assert.match(html, /Terminal<\/span>/);
     assert.match(html, /42%/);
     assert.ok(!html.includes('<b>bug</b>'), 'title must be escaped');
     assert.match(html, /&lt;b&gt;bug/);
+  } finally { b.d.restore(); }
+});
+
+test('switcher with nothing active is just Ada + Map', async () => {
+  const b = await boot({ chat: { sessions: [{ ...sessions[1] }] } });
+  try {
+    const html = b.el('sv-bar').innerHTML;
+    assert.equal((html.match(/<button/g) || []).length, 2);
+    assert.ok(html.includes('data-sv-ada') && html.includes('data-sv-map') && !html.includes('data-sv='));
   } finally { b.d.restore(); }
 });
 
