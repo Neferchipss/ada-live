@@ -156,6 +156,7 @@ code, .mono { font-family: var(--mono); }
 .pj-sub { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--a-col); display: inline-block; }
 .dot.w { box-shadow: 0 0 0 3px color-mix(in srgb, var(--a-col) 30%, transparent); animation: breathe 1.6s infinite; }
+.dot.o { background: var(--amber); opacity: .6; }
 .pj-body { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font: 12px/1.6 var(--mono); color: var(--muted); }
 .pj-body ul { list-style: none; margin: 4px 0 0; padding: 0; }
 .pj-body li { display: flex; justify-content: space-between; gap: 10px; }
@@ -393,6 +394,7 @@ body.in-chat { overflow: hidden; }
 .ws-rows { display: grid; gap: 6px; max-height: max(48px, calc(22vh - 120px)); max-height: max(48px, calc(22dvh - 120px)); overflow-y: auto; overscroll-behavior: contain; padding: 2px 0; }
 .ws-row { --k: var(--idle); display: grid; gap: 8px; border: 1px solid var(--line); border-left: 3px solid var(--k); border-radius: 12px; background: var(--bg-2); padding: 6px 10px; cursor: pointer; }
 .ws-row[data-agent='claude'] { --k: var(--claude); } .ws-row[data-agent='codex'] { --k: var(--codex); } .ws-row[data-agent='chatgpt'] { --k: var(--codex); }
+.ws-ext[data-s='waiting'] { border-left-color: var(--amber); }
 .ws-row[data-s='awaiting-approval'] { border-color: rgba(240, 164, 58, .55); border-left-color: var(--amber); }
 .ws-row:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
 .ws-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -671,8 +673,9 @@ div.attn-row { cursor: default; }
 .sv-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--idle); flex: none; display: inline-block; }
 .sv-chip[data-s='working'] .sv-dot, .sv-dot.live { background: #4cd08a; box-shadow: 0 0 0 0 rgba(76, 208, 138, .6); animation: sv-pulse 1.8s ease-out infinite; }
 .sv-chip[data-s='blocked'] .sv-dot { background: var(--amber); }
+.sv-chip[data-s='waiting'] .sv-dot { background: var(--amber); opacity: .6; }
 .sv-chip[data-s='failed'] .sv-dot { background: var(--red); }
-.sv-chip:not([data-s='working']):not([data-s='blocked']) { opacity: .78; }
+.sv-chip:not([data-s='working']):not([data-s='blocked']):not([data-s='waiting']) { opacity: .78; }
 .sv-chip.on, .sv-chip.sv-ada { opacity: 1; }
 .sv-tag { font: 600 9.5px var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--dim); border: 1px solid var(--line); border-radius: 6px; padding: 0 4px; }
 .sv-chip[data-agent='codex'] .sv-tag { color: var(--codex); border-color: rgba(63, 182, 168, .35); }
@@ -686,7 +689,8 @@ div.attn-row { cursor: default; }
 .sv-bt { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 600; }
 .sv-back, .sv-b1 .link { flex: none; font: 600 12px var(--mono); color: #ff8798; white-space: nowrap; padding: 2px 0; }
 .sv-st { flex: none; display: inline-flex; align-items: center; gap: 5px; font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
-.sv-st[data-s='blocked'] .sv-dot { background: var(--amber); }
+.sv-st[data-s='blocked'] .sv-dot, .sv-st[data-s='waiting'] .sv-dot { background: var(--amber); }
+.sv-st[data-s='waiting'] .sv-dot { opacity: .6; }
 .sv-st[data-s='failed'] .sv-dot { background: var(--red); }
 .sv-b1 .sv-tag, .sv-b1 .sv-pct { flex: none; }
 .sv-lock { flex: none; color: var(--dim); }
@@ -750,6 +754,7 @@ body:not(.in-chat) .sv-actions { display: none; }
 .mp-leaf .sv-dot { background: var(--idle); }
 .mp-leaf .mp-card[data-s='working'] .sv-dot { background: #4cd08a; animation: sv-pulse 1.8s ease-out infinite; }
 .mp-leaf .mp-card[data-s='blocked'] .sv-dot { background: var(--amber); }
+.mp-leaf .mp-card[data-s='waiting'] .sv-dot { background: var(--amber); opacity: .6; }
 .mp-leaf .mp-card[data-s='failed'] .sv-dot { background: var(--red); }
 .mp-leaf .mp-card[data-agent='codex'] .mp-ag { color: var(--codex); }
 @media (prefers-reduced-motion: reduce) { .mp-leaf .sv-dot, .mp-root .sv-dot, .mp-caret { animation: none !important; transition: none !important; } .mp-leaf .mp-card[data-s='working'] .sv-dot { box-shadow: 0 0 0 2px rgba(76, 208, 138, .35); } }

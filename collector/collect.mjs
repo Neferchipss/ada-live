@@ -26,7 +26,8 @@ import { limits } from './lib/limits.mjs';
 import { normPath } from './lib/util.mjs';
 import { FeedPublisher } from './lib/feed.mjs';
 import { buildGitActivity, unpushedList } from './lib/gitactivity.mjs';
-import { Journal, activeMap, attribute, sessionActive } from './lib/journal.mjs';
+import { Journal, activeMap, attribute, sessionState } from './lib/journal.mjs';
+import { openTerminalSessions, refreshOpenTerminals, markOpen } from './lib/terminals.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(HERE, '..', 'docs', 'data', 'live.enc.json');
@@ -55,8 +56,12 @@ let hub = null;
 const journal = once ? null : new Journal();
 if (journal) journal.unpushed = () => unpushedList([...work.projects.values()]);
 let ext = { t: 0, sessions: [], tasks: [] };
+// Marks the sessions whose CLI process is still alive (even if the transcript is quiet) so they count as 'waiting', not finished.
+function withOpen(sessions) {
+  return markOpen(sessions, openTerminalSessions({ codexSessions: sessions.filter((s) => s.agent === 'codex') }));
+}
 function externals() {
-  if (Date.now() - ext.t > 8000) ext = { t: Date.now(), sessions: [...collectClaude(), ...collectCodex()], tasks: collectTasks() };
+  if (Date.now() - ext.t > 8000) ext = { t: Date.now(), sessions: withOpen([...collectClaude(), ...collectCodex()]), tasks: collectTasks() };
   return ext;
 }
 const refreshAccounts = () => collectAccounts().then((a) => { accounts = a; limits.fromAccounts(a); }).catch((e) => console.error('[accounts]', e));
@@ -93,9 +98,9 @@ function snapshot() {
   const claude = collectClaude();
   const codex = collectCodex();
   const tasks = collectTasks();
-  ext = { t: Date.now(), sessions: [...claude, ...codex], tasks };
+  ext = { t: Date.now(), sessions: withOpen([...claude, ...codex]), tasks };
   const hidden = hub?.headSessions() || new Set();
-  const sessions = [...claude, ...codex].filter((x) => !hidden.has(x.id)).sort((a, b) => b.lastActivity - a.lastActivity);
+  const sessions = ext.sessions.filter((x) => !hidden.has(x.id)).sort((a, b) => b.lastActivity - a.lastActivity);
 
   const projects = work.list();
   // Attach which agents are working in each project.
@@ -104,7 +109,7 @@ function snapshot() {
     p.agents = sessions
       .filter((s) => s.cwd && (normPath(s.cwd) === n || normPath(s.cwd).startsWith(n + path.sep)))
       .filter((s) => !p.looseOnly || normPath(s.cwd) === n)
-      .map((s) => ({ agent: s.agent, id: s.id, status: s.status, lastActivity: s.lastActivity, ...(s.context ? { context: s.context } : {}) }));
+      .map((s) => ({ agent: s.agent, id: s.id, status: s.status, state: sessionState(s), lastActivity: s.lastActivity, ...(s.context ? { context: s.context } : {}) }));
     p.lastActivity = Math.max(p.lastModified || 0, ...p.agents.map((a) => a.lastActivity));
   }
 
@@ -113,7 +118,7 @@ function snapshot() {
     host: os.hostname(),
     workRoot: cfg.workRoot,
     ada: presence(claude.filter((x) => !hidden.has(x.id))),
-    sessions: sessions.map(({ steps, ...s }) => ({ ...s, steps: steps.slice(-8) })),
+    sessions: sessions.map(({ steps, ...s }) => ({ ...s, state: sessionState(s), steps: steps.slice(-8) })),
     tasks,
     timeline: timeline(sessions, tasks),
     projects,
@@ -159,7 +164,7 @@ function watchActiveRepos() {
   const e = externals();
   const now = Date.now();
   const cwds = [
-    ...e.sessions.filter((x) => x.cwd && (sessionActive(x, now) || now - x.lastActivity < 3 * 60e3)).map((x) => x.cwd),
+    ...e.sessions.filter((x) => x.cwd && (sessionState(x, now) !== 'idle' || now - x.lastActivity < 3 * 60e3)).map((x) => x.cwd),
     ...(hub?.state.jobs || []).filter((j) => j.status === 'running').map((j) => j.folder),
   ];
   for (const c of cwds) { const p = work.projectFor(c); if (p?.isRepo) work.dirtyGit.add(p); }
@@ -178,7 +183,7 @@ function gitHook() {
 
 async function tick() {
   watchActiveRepos();
-  await Promise.all([work.refreshGit(12, gitHook()), refreshAccounts()]);
+  await Promise.all([work.refreshGit(12, gitHook()), refreshAccounts(), refreshOpenTerminals()]);
   const e = externals();
   journal?.observeSessions(e.sessions, { projects: work.list(), workRoot: cfg.workRoot, own: hub?.ownSessions(), jobs: hub?.state.jobs || [] });
   hub?.tick(); // re-check held jobs now that sessions may have ended
@@ -228,6 +233,7 @@ if (once) {
   await work.refreshGit(500);
   await work.refreshGithub(GH_CACHE);
   await refreshAccounts();
+  await refreshOpenTerminals();
   write(snapshot());
   console.log(`[collector] wrote ${OUT}`);
   process.exit(0);
@@ -238,6 +244,8 @@ if (once) {
     // Media chunks are sealed like everything else; the leading "m":1 lets the relay pass them on without storing them as a snapshot.
     mediaOut: (obj) => relay?.sendMedia(JSON.stringify({ m: 1, ...seal(obj, key, cfg.salt) })),
     relayMedia: () => relay?.mediaOk,
+    // Nefer's own terminals: the switcher, Map and conflict guard read them through here.
+    services: { external: externals },
   });
   if (cfg.relayUrl && cfg.relayKey) {
     relay = new RelayClient(cfg.relayUrl, cfg.relayKey, (n) => { if (n > 0 && !streaming) streamLoop(); }, onCommand);

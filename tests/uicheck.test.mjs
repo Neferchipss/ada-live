@@ -73,9 +73,9 @@ test('state-changing controls are never clickable; navigation chips are', () => 
 test('freshUrl adds a throwaway query and assetVersion reads app.js ?v=', () => {
   assert.equal(freshUrl('https://h/ada-live/', 123), 'https://h/ada-live/?uc=123');
   assert.equal(freshUrl('https://h/p?a=1#x', 5), 'https://h/p?a=1&uc=5#x');
-  assert.equal(assetVersion('https://h/ada-live/app.js?v=sv-8'), 'sv-8');
+  assert.equal(assetVersion('https://h/ada-live/app.js?v=sv-9'), 'sv-9');
   assert.equal(assetVersion('https://h/app.js'), '');
-  assert.equal(buildSummary({ assetVersion: 'sv-8' }, []).assetVersion, 'sv-8');
+  assert.equal(buildSummary({ assetVersion: 'sv-9' }, []).assetVersion, 'sv-9');
 });
 
 test('summary keeps map and session facts compact and redacted', () => {

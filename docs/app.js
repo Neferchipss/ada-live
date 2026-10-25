@@ -2,10 +2,10 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG, selectable, pruneSelection, selectAll, selectOps, toggleSelection, selectionView, batchEntries, batchMessage } from './approvals.mjs?v=sv-8';
-import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-8';
-import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-8';
-import { buildSessionMap, activeCount, RECENT_ID, ribbonSessions } from './session-map.mjs?v=sv-8';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG, selectable, pruneSelection, selectAll, selectOps, toggleSelection, selectionView, batchEntries, batchMessage } from './approvals.mjs?v=sv-9';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-9';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-9';
+import { buildSessionMap, activeCount, RECENT_ID, ribbonSessions } from './session-map.mjs?v=sv-9';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -473,7 +473,7 @@ function renderWork() {
   const unpushedN = (p) => gitByPath.get(p.path)?.ahead || 0;
   // With the Unpushed chip on, projects holding unpushed commits stay visible whatever the time filter says.
   const keep = (p) => unpushedFirst && unpushedN(p) > 0;
-  if (workFilter === 'active') list = list.filter((p) => keep(p) || now - (p.lastActivity || 0) < 24 * 3600e3 || p.agents?.some((a) => a.status !== 'idle'));
+  if (workFilter === 'active') list = list.filter((p) => keep(p) || now - (p.lastActivity || 0) < 24 * 3600e3 || p.agents?.some((a) => agentState(a) !== 'idle'));
   if (workFilter === 'week') list = list.filter((p) => keep(p) || now - (p.lastActivity || 0) < 7 * 24 * 3600e3);
   if (q) list = list.filter((p) => `${p.group || ''} ${p.name}`.toLowerCase().includes(q));
   if (kindFilter) list = list.filter((p) => p.kind === kindFilter);
@@ -533,9 +533,12 @@ function gitSection(p, g) {
   </details>`;
 }
 
+// working / waiting (CLI open but quiet) / idle, from the collector's shared definition; older snapshots only had status.
+const agentState = (a) => a.state || (a.status !== 'idle' ? 'working' : 'idle');
 function projectCard(p) {
-  const live = p.agents?.some((a) => a.status !== 'idle');
-  const agents = [...new Map((p.agents || []).map((a) => [a.agent + a.status, a])).values()];
+  const live = p.agents?.some((a) => agentState(a) === 'working');
+  const open = !live && p.agents?.some((a) => agentState(a) === 'waiting');
+  const agents = [...new Map((p.agents || []).map((a) => [a.agent + agentState(a), a])).values()];
   const git = p.git;
   const gx = gitByPath.get(p.path);
   return `
@@ -543,14 +546,14 @@ function projectCard(p) {
       <summary>
         <div class="pj-top">
           <span class="pj-name">${esc(p.name)}</span>
-          ${agents.map((a) => `<span class="dot${a.status !== 'idle' ? ' w' : ''}" data-agent="${esc(a.agent)}" title="${esc(agentLabel[a.agent])} ${esc(a.status)}"></span>`).join('')}
+          ${agents.map((a) => `<span class="dot${agentState(a) === 'working' ? ' w' : agentState(a) === 'waiting' ? ' o' : ''}" data-agent="${esc(a.agent)}" title="${esc(agentLabel[a.agent])} ${esc(agentState(a))}"></span>`).join('')}
           <span class="ago" data-ago="${p.lastActivity || 0}">${ago(p.lastActivity)}</span>
         </div>
         <div class="pj-sub">
           <span class="kind" data-kind="${esc(p.kind || 'local')}">${KIND[p.kind] || 'Local'}${p.private === true ? ' · private' : p.private === false && p.kind !== 'pages' ? ' · public' : ''}</span>
           ${git ? `<span class="pill">⎇ ${esc(git.branch)}</span>${git.changed ? `<span class="pill r">${git.changed} changed</span>` : '<span class="pill">clean</span>'}` : ''}
           ${gx?.ahead ? `<span class="pill r">${gx.ahead} not pushed</span>` : ''}
-          ${live ? `<span class="pill r">agent working</span>${ctxBar(p.agents.find((a) => a.status !== 'idle' && a.context)?.context)}` : ''}
+          ${live || open ? `<span class="pill${live ? ' r' : ''}">${live ? 'agent working' : 'agent open'}</span>${ctxBar(p.agents.find((a) => agentState(a) !== 'idle' && a.context)?.context)}` : ''}
           ${p.looseOnly ? '<span class="pill">loose files</span>' : ''}
         </div>
       </summary>
@@ -1110,10 +1113,10 @@ function stripRow(it) {
 
 // Someone else's work (a terminal session or a delegated task): read-only, Ada can't kill or approve it.
 function extRow({ w, sub }) {
-  const label = w.status === 'blocked' ? 'waiting on you' : 'working';
+  const label = w.status === 'blocked' ? 'waiting on you' : w.status === 'waiting' ? 'waiting' : 'working';
   return `<div class="ws-row ws-ext" data-s="${esc(w.status)}" data-agent="${esc(w.agent)}"${svOpenAttr(w.agent, w.id)}>
     <div class="ws-line">
-      <span class="tl-ico">${w.status === 'blocked' ? ICON.wait : ICON.spin}</span>
+      <span class="tl-ico">${w.status === 'blocked' || w.status === 'waiting' ? ICON.wait : ICON.spin}</span>
       <span class="tl-main">
         <span class="tl-title">${esc(w.title || 'Session')}</span>
         <span class="tl-sub">${esc(subline(SRC_LABEL[w.source] || w.source, sub, label, agentTag(w.agent)))}</span>
@@ -1763,7 +1766,7 @@ function svFresh() {
 }
 const svList = () => (Array.isArray(data?.chat?.sessions) ? data.chat.sessions : []);
 const svId = (s) => `${s.agent}|${s.session}`;
-const svLive = (st) => st === 'working' || st === 'blocked';
+const svLive = (st) => st === 'working' || st === 'blocked' || st === 'waiting';
 const svMeta = () => svList().find((s) => svSel && s.agent === svSel.agent && s.session === svSel.session) || null;
 const svTitle = (s) => String(s?.title || s?.project || 'Session').replace(/\s+/g, ' ').trim();
 function svOpenAttr(agent, session) {
@@ -1809,13 +1812,13 @@ function svChrome() {
   const status = sv.status || m?.status || '';
   const live = svLive(status);
   const title = m ? svTitle(m) : sv.title || 'Session';
-  const word = live ? 'working' : status === 'failed' ? 'failed' : 'done';
+  const word = status === 'waiting' ? 'waiting' : live ? 'working' : status === 'failed' ? 'failed' : 'done';
   const note = [sv.stopped ? 'paused (quiet)' : '', sv.warn].filter(Boolean).join(' · ');
   const cv = ctxView(sv.ctx || m?.context);
   const pct = cv && cv.pct !== null ? `<span class="sv-pct${cv.level ? ` ${cv.level}` : ''}" title="${esc(cv.title)}">${cv.pct}%</span>` : '';
   const html = `<div class="sv-b1"><button type="button" class="sv-back" data-sv-back aria-label="Back to Ada">‹ Ada</button>`
     + `<span class="sv-bt" title="${esc(title)}">${esc(title)}</span><span class="sv-tag">${esc(SV_SRC[m?.source || sv.source] || 'Session')}</span>`
-    + `<span class="sv-st" data-s="${esc(status)}" title="${esc(`${agentLabel[svSel.agent] || svSel.agent}${note ? ` · ${note}` : ''}`)}"><i class="sv-dot${live ? ' live' : ''}"></i>${word}</span>${pct}`
+    + `<span class="sv-st" data-s="${esc(status)}" title="${esc(`${agentLabel[svSel.agent] || svSel.agent}${note ? ` · ${note}` : ''}`)}"><i class="sv-dot${live && status !== 'waiting' ? ' live' : ''}"></i>${word}</span>${pct}`
     + `<svg class="sv-lock" viewBox="0 0 16 16" width="12" height="12" role="img" aria-label="read-only"><title>read-only</title><path fill="currentColor" d="M5 7V5a3 3 0 0 1 6 0v2h1v7H4V7h1zm1.5 0h3V5a1.5 1.5 0 0 0-3 0v2z"/></svg>`
     + `${sv.stopped || sv.warn ? '<button type="button" class="link" data-sv-retry>Refresh</button>' : ''}</div>`;
   if (html !== svChromeKey) { svChromeKey = html; b.innerHTML = html; }

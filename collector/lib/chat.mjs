@@ -15,7 +15,7 @@ import { limits as sharedLimits } from './limits.mjs';
 import { clip } from './util.mjs';
 import { MediaStore, checkAttachPath, cacheKey, validKey, formatSize, transcribe, MAX_ATTACH_PER_REPLY, CHUNK } from './media.mjs';
 import { UploadManager, UPLOAD } from './uploads.mjs';
-import { activeMap, findConflict, liveLine, locate, isAdaSession, sessionActive, taskActive } from './journal.mjs';
+import { activeMap, findConflict, liveLine, locate, isAdaSession, sessionState, taskActive } from './journal.mjs';
 import { sessionTranscript } from './transcript.mjs';
 import { claudeSessionContext } from './claude.mjs';
 import { codexSessionContext } from './codex.mjs';
@@ -679,10 +679,11 @@ ${list}`;
     }
     for (const x of sessions) {
       if (taken.has(x.id) || own.has(x.id) || isAdaSession(x, { own, jobs })) continue;
-      if (now - (x.lastActivity || 0) > SV_RECENT_MS) continue;
+      const state = sessionState(x, now);
+      if (state === 'idle' && now - (x.lastActivity || 0) > SV_RECENT_MS) continue;
       out.push({
         agent: x.agent, session: x.id, title: clip(x.title, 80), ...where(x.cwd), source: 'terminal',
-        status: sessionActive(x, now) ? (x.status === 'blocked' ? 'blocked' : 'working') : 'idle', startedAt: x.startedAt || 0, lastAt: x.lastActivity || 0, ...(x.context ? { context: x.context } : {}),
+        status: state === 'working' ? (x.status === 'blocked' ? 'blocked' : 'working') : state, startedAt: x.startedAt || 0, lastAt: x.lastActivity || 0, ...(x.context ? { context: x.context } : {}),
       });
     }
     // Delegated tasks (tools/delegate.mjs etc.) have no transcript; Ada's own jobs already appear above as jobs.
@@ -697,7 +698,7 @@ ${list}`;
         startedAt: k.startedAt || k.createdAt || 0, lastAt: last,
       });
     }
-    const live = (e) => (e.status === 'working' || e.status === 'blocked' ? 1 : 0);
+    const live = (e) => (e.status === 'working' || e.status === 'blocked' ? 2 : e.status === 'waiting' ? 1 : 0);
     return out.sort((a, b) => live(b) - live(a) || b.lastAt - a.lastAt);
   }
 

@@ -36,6 +36,17 @@ export function sessionActive(s, now = Date.now()) {
   return s.status === 'blocked' && now - (s.lastActivity || 0) < ACTIVE_BLOCKED_MS;
 }
 
+/**
+ * working: transcript written recently (sessionActive). waiting: its CLI process is alive (s.open, set by terminals.mjs) but quiet.
+ * idle: neither (finished, or the process is gone). Map, switcher, ribbon, Activity, Work cards and the journal all read this.
+ */
+export function sessionState(s, now = Date.now()) {
+  if (sessionActive(s, now)) return 'working';
+  return s?.open ? 'waiting' : 'idle';
+}
+/** Working or waiting: the session is shown as active everywhere. (Conflict guard and change credit still use sessionActive.) */
+export const sessionOpen = (s, now = Date.now()) => sessionState(s, now) !== 'idle';
+
 export const taskActive = (k, now) => k?.status === 'running' && k.by !== 'ada-chat' && now - (k.updatedAt || k.createdAt || 0) < TASK_STALE_MS;
 
 /** Which project is cwd in, and where inside it? null when it's outside the Work folder. */
@@ -102,8 +113,9 @@ export function activeMap({ projects = [], workRoot = '', sessions = [], jobs = 
     });
   }
   for (const s of sessions) {
-    if (!s.cwd || isAdaSession(s, { own, jobs }) || !sessionActive(s, now)) continue;
-    add(s.cwd, { source: 'terminal', id: s.id, agent: s.agent, mode: '', title: clip(s.title, 80), since: s.lastActivity || now, status: s.status, ...ctx(s) });
+    if (!s.cwd || isAdaSession(s, { own, jobs }) || !sessionOpen(s, now)) continue;
+    const waiting = sessionState(s, now) === 'waiting';
+    add(s.cwd, { source: 'terminal', id: s.id, agent: s.agent, mode: '', title: clip(s.title, 80), since: s.lastActivity || now, status: waiting ? 'waiting' : s.status, ...ctx(s) });
   }
   for (const k of tasks) {
     if (!k.cwd || !taskActive(k, now)) continue;
@@ -305,14 +317,14 @@ export class Journal {
     const byId = new Map(sessions.map((s) => [s.id, s]));
     for (const s of sessions) {
       if (isAdaSession(s, { own: ctx.own, jobs: ctx.jobs })) continue;
-      if (sessionActive(s, now)) {
+      if (sessionOpen(s, now)) {
         const prev = this.live.get(s.id);
         this.live.set(s.id, { since: prev?.since || now, agent: s.agent, cwd: s.cwd, title: s.title, note: s.thought || s.title });
       }
     }
     for (const [id, l] of [...this.live]) {
       const s = byId.get(id);
-      if (s && sessionActive(s, now)) continue;
+      if (s && sessionOpen(s, now)) continue;
       this.live.delete(id);
       const durMs = now - l.since;
       const loc = locate(ctx.projects, ctx.workRoot, l.cwd);

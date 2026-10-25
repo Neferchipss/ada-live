@@ -1,11 +1,11 @@
 // Pure model for the "Chats map": every chat as a branching tree. No DOM, no globals.
 //   Ada (root) > project > folder (subfolder path segments) > session leaf, then a "Recent" branch of the same shape
 //   holding sessions that finished within the last 24h. Built only from the snapshot's chat.sessions list.
-import { projectOf, subOf, DAY } from './activity-model.mjs?v=sv-8';
+import { projectOf, subOf, DAY } from './activity-model.mjs?v=sv-9';
 
 export const OTHER_LABEL = 'Other';
 export const RECENT_ID = 'recent';
-const LIVE = new Set(['working', 'blocked']);
+const LIVE = new Set(['working', 'blocked', 'waiting']); // waiting = a terminal that is open but quiet; counts as active, not as working
 const arr = (x) => (Array.isArray(x) ? x : []);
 const num = (x) => (Number.isFinite(x) ? x : 0);
 const text = (x) => String(x ?? '').trim();

@@ -66,11 +66,11 @@ async function boot({ reply = () => null, chat = {} } = {}) {
 }
 
 test('the page carries the new cache-bust and the viewer elements', () => {
-  assert.match(APP, /\?v=sv-8/);
+  assert.match(APP, /\?v=sv-9/);
   const html = fs.readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8');
   for (const id of ['sv-bar', 'sv-banner', 'sv-actions']) assert.match(html, new RegExp(`id="${id}"`));
-  assert.match(html, /app\.js\?v=sv-8/);
-  assert.match(html, /style\.css\?v=sv-8/);
+  assert.match(html, /app\.js\?v=sv-9/);
+  assert.match(html, /style\.css\?v=sv-9/);
 });
 
 test('switcher: Ada, Map, then only active chats; no Recent label and no finished chips', async () => {
