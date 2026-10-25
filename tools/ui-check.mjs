@@ -38,6 +38,15 @@ export function parseArgs(argv) {
   return opts;
 }
 
+// Throwaway cache-buster for the page URL (keeps any existing query and hash).
+export function freshUrl(url, ts = Date.now()) {
+  const u = new URL(url);
+  u.searchParams.set('uc', String(ts));
+  return u.toString();
+}
+// The ?v=<version> an asset URL was loaded with, or '' when absent.
+export const assetVersion = (src) => String(src ?? '').match(/[?&]v=([\w.-]+)/)?.[1] || '';
+
 const pad = (n) => String(n).padStart(2, '0');
 export function stamp(d = new Date()) {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
@@ -72,6 +81,7 @@ export function buildSummary(r, secrets = []) {
   const summary = {
     ok: r.ok !== false,
     url: redact(r.url, secrets),
+    assetVersion: redact(r.assetVersion || '', secrets).slice(0, 40),
     title: redact(r.title || '', secrets),
     shots: (r.shots || []).map((p) => redact(p, secrets)),
     consoleErrors: limitList(r.consoleErrors || [], secrets),
@@ -211,6 +221,9 @@ export async function run(opts, io = { log: (m) => process.stderr.write(m + '\n'
       else if (m.method === 'Network.responseReceived' && p.response.status >= 400) result.failedRequests.push(`${p.response.url} HTTP ${p.response.status}`);
     });
     for (const d of ['Page', 'Runtime', 'Log', 'Network']) await send(`${d}.enable`);
+    // The persistent profile caches the page; always load fresh.
+    await send('Network.setCacheDisabled', { cacheDisabled: true });
+    await send('Network.clearBrowserCache');
     await send('Emulation.setDeviceMetricsOverride', { width: 430, height: 932, deviceScaleFactor: 2, mobile: true });
     await send('Emulation.setUserAgentOverride', { userAgent: MOBILE_UA, platform: 'iPhone' });
     await send('Emulation.setTouchEmulationEnabled', { enabled: true });
@@ -236,7 +249,7 @@ export async function run(opts, io = { log: (m) => process.stderr.write(m + '\n'
       return null;
     };
 
-    await send('Page.navigate', { url: opts.url });
+    await send('Page.navigate', { url: freshUrl(opts.url) });
     // Give a stored session a few seconds to restore itself before treating this as a login screen.
     let state = await waitFor((s) => s.appVisible, 6000);
     if (!state) {
@@ -253,6 +266,8 @@ export async function run(opts, io = { log: (m) => process.stderr.write(m + '\n'
     // Wait for data to render rather than the Decrypting state, then let polling settle.
     await waitFor((s) => s.appVisible && !/Decrypting/.test(s.unlockText), 15000);
     await sleep(2500);
+
+    result.assetVersion = assetVersion(await evalJs(`(document.querySelector('script[src*="app.js"]') || {}).src || ''`));
 
     for (const tab of opts.tabs) {
       const clicked = await evalJs(`(() => { const b = document.querySelector('#tabs button[data-tab="${tab}"]'); if (!b) return false; b.click(); return true; })()`);

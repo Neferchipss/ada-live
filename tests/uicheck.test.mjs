@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { scrollsX, isForbiddenControl, buildSummary, parseArgs, redact, shotName, stamp, DEFAULT_URL, ALL_TABS } from '../tools/ui-check.mjs';
+import { scrollsX, isForbiddenControl, buildSummary, parseArgs, redact, shotName, stamp, DEFAULT_URL, ALL_TABS, freshUrl, assetVersion } from '../tools/ui-check.mjs';
 
 const PASS = 'correct-horse-battery';
 
@@ -68,6 +68,14 @@ test('only horizontally scrollable containers are exempt from the overflow check
 test('state-changing controls are never clickable; navigation chips are', () => {
   for (const s of ['[data-approve]', '#appr-batch-approve', '.deny', '#composer-send', '#attach-paperclip', 'input[data-pick]', '#kill', '.run-anyway']) assert.equal(isForbiddenControl(s), true, s);
   for (const s of ['#tabs button[data-tab="chat"]', '#sv-bar [data-sv-map]', '#map-close', '#sv-bar .sv-chip[data-sv]', '#sv-bar [data-sv-ada]']) assert.equal(isForbiddenControl(s), false, s);
+});
+
+test('freshUrl adds a throwaway query and assetVersion reads app.js ?v=', () => {
+  assert.equal(freshUrl('https://h/ada-live/', 123), 'https://h/ada-live/?uc=123');
+  assert.equal(freshUrl('https://h/p?a=1#x', 5), 'https://h/p?a=1&uc=5#x');
+  assert.equal(assetVersion('https://h/ada-live/app.js?v=sv-8'), 'sv-8');
+  assert.equal(assetVersion('https://h/app.js'), '');
+  assert.equal(buildSummary({ assetVersion: 'sv-8' }, []).assetVersion, 'sv-8');
 });
 
 test('summary keeps map and session facts compact and redacted', () => {

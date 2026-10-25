@@ -66,11 +66,11 @@ async function boot({ reply = () => null, chat = {} } = {}) {
 }
 
 test('the page carries the new cache-bust and the viewer elements', () => {
-  assert.match(APP, /\?v=sv-7/);
+  assert.match(APP, /\?v=sv-8/);
   const html = fs.readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8');
   for (const id of ['sv-bar', 'sv-banner', 'sv-actions']) assert.match(html, new RegExp(`id="${id}"`));
-  assert.match(html, /app\.js\?v=sv-7/);
-  assert.match(html, /style\.css\?v=sv-7/);
+  assert.match(html, /app\.js\?v=sv-8/);
+  assert.match(html, /style\.css\?v=sv-8/);
 });
 
 test('switcher: Ada, Map, then only active chats; no Recent label and no finished chips', async () => {
@@ -135,7 +135,8 @@ test('viewer: loading, then entries; read-only banner, composer swapped, tools e
     assert.ok(!log.includes('12 passed'), 'result is collapsed until tapped');
     const banner = b.el('sv-banner');
     assert.equal(banner.hidden, false);
-    assert.match(banner.innerHTML, /Viewing/);
+    assert.match(banner.innerHTML, /sv-lock/);
+    assert.ok(!/<b>/.test(banner.innerHTML), 'banner is a single compact row');
     assert.match(banner.innerHTML, /read-only/);
     assert.match(banner.innerHTML, /Job/);
     assert.match(banner.innerHTML, /Back to Ada/);

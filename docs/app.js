@@ -2,10 +2,10 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG, selectable, pruneSelection, selectAll, selectOps, toggleSelection, selectionView, batchEntries, batchMessage } from './approvals.mjs?v=sv-7';
-import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-7';
-import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-7';
-import { buildSessionMap, activeCount, RECENT_ID, ribbonSessions } from './session-map.mjs?v=sv-7';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG, selectable, pruneSelection, selectAll, selectOps, toggleSelection, selectionView, batchEntries, batchMessage } from './approvals.mjs?v=sv-8';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-8';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-8';
+import { buildSessionMap, activeCount, RECENT_ID, ribbonSessions } from './session-map.mjs?v=sv-8';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -1809,8 +1809,15 @@ function svChrome() {
   const status = sv.status || m?.status || '';
   const live = svLive(status);
   const title = m ? svTitle(m) : sv.title || 'Session';
-  const html = `<div class="sv-b1"><span class="sv-dot${live ? ' live' : ''}"></span><span class="sv-bt">Viewing <b>${esc(title)}</b> · ${esc(SV_SRC[m?.source || sv.source] || 'Session')} · read-only</span><button type="button" class="link sv-back" data-sv-back>Back to Ada</button></div>`
-    + `<div class="sv-b2"><span>${esc(agentLabel[svSel.agent] || svSel.agent)} · ${live ? 'live' : esc(status || 'quiet')}${sv.stopped ? ' · paused (quiet)' : ''}${sv.warn ? ` · ${esc(sv.warn)}` : ''}</span>${ctxBar(sv.ctx || m?.context)}${sv.stopped || sv.warn ? '<button type="button" class="link" data-sv-retry>Refresh</button>' : ''}</div>`;
+  const word = live ? 'working' : status === 'failed' ? 'failed' : 'done';
+  const note = [sv.stopped ? 'paused (quiet)' : '', sv.warn].filter(Boolean).join(' · ');
+  const cv = ctxView(sv.ctx || m?.context);
+  const pct = cv && cv.pct !== null ? `<span class="sv-pct${cv.level ? ` ${cv.level}` : ''}" title="${esc(cv.title)}">${cv.pct}%</span>` : '';
+  const html = `<div class="sv-b1"><button type="button" class="sv-back" data-sv-back aria-label="Back to Ada">‹ Ada</button>`
+    + `<span class="sv-bt" title="${esc(title)}">${esc(title)}</span><span class="sv-tag">${esc(SV_SRC[m?.source || sv.source] || 'Session')}</span>`
+    + `<span class="sv-st" data-s="${esc(status)}" title="${esc(`${agentLabel[svSel.agent] || svSel.agent}${note ? ` · ${note}` : ''}`)}"><i class="sv-dot${live ? ' live' : ''}"></i>${word}</span>${pct}`
+    + `<svg class="sv-lock" viewBox="0 0 16 16" width="12" height="12" role="img" aria-label="read-only"><title>read-only</title><path fill="currentColor" d="M5 7V5a3 3 0 0 1 6 0v2h1v7H4V7h1zm1.5 0h3V5a1.5 1.5 0 0 0-3 0v2z"/></svg>`
+    + `${sv.stopped || sv.warn ? '<button type="button" class="link" data-sv-retry>Refresh</button>' : ''}</div>`;
   if (html !== svChromeKey) { svChromeKey = html; b.innerHTML = html; }
 }
 
