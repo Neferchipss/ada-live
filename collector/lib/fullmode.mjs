@@ -156,16 +156,24 @@ export class FullModePolicy {
     return message;
   }
 
-  #auditPin(job, outcome) {
-    try { this.audit(job, outcome); } catch { /* an unwritable log must not turn a refusal into an approval */ }
+  #auditPin(job, outcome, batchId) {
+    try { this.audit(job, outcome, batchId); } catch { /* an unwritable log must not turn a refusal into an approval */ }
+  }
+
+  // The per-job checks that come before any PIN attempt. Returns { reason, message } for a refusal (note already set), else null.
+  #precheck(job, cmd) {
+    delete job.approvalNote; // a new attempt starts; every refusal below records its own note
+    const fail = (reason, message) => ({ reason, message: this.#refuse(job, reason, message) });
+    if (cmd.job !== job.id || typeof cmd.approval !== 'string' || cmd.approval !== job.approvalId) return fail('mismatch', 'Approval does not match this job.');
+    if (this.expired(job)) return fail('expired', 'Approval expired; ask Ada to propose a new job.');
+    if (job.approvalDigest !== binding(job)) return fail('mismatch', 'Job changed after approval was requested; propose it again.');
+    return null;
   }
 
   approve(job, cmd) {
     if (!job || normalizeMode(job.mode) === 'safe' || job.status !== 'awaiting-approval') return 'Job is not awaiting approval.';
-    delete job.approvalNote; // a new attempt starts; every refusal below records its own note
-    if (cmd.job !== job.id || typeof cmd.approval !== 'string' || cmd.approval !== job.approvalId) return this.#refuse(job, 'mismatch', 'Approval does not match this job.');
-    if (this.expired(job)) return this.#refuse(job, 'expired', 'Approval expired; ask Ada to propose a new job.');
-    if (job.approvalDigest !== binding(job)) return this.#refuse(job, 'mismatch', 'Job changed after approval was requested; propose it again.');
+    const early = this.#precheck(job, cmd);
+    if (early) return early.message;
     const record = readPin(this.stateDir);
     if (!record) return PIN_MESSAGE;
     this.pinFailures = this.pinFailures.filter((t) => this.now() - t < PIN_LOCK_MS);
@@ -189,6 +197,51 @@ export class FullModePolicy {
     return null;
   }
 
+  // Batch approval: ONE PIN check for the whole batch (one failed attempt if wrong), then every job passes the
+  // same checks single approve applies. items: [{ job, approval }]. Returns one { job, why, reason } per item;
+  // why is null for an approved job. Audit lines (shared batchId, never the PIN) are written here.
+  approveBatch(items, pin, batchId) {
+    const out = items.map((it) => ({ job: it.job, why: null, reason: null }));
+    const refuse = (o, noteReason, auditReason, message) => {
+      o.reason = auditReason; o.why = this.#refuse(o.job, noteReason, message);
+      this.#auditPin(o.job, `refused:${auditReason}`, batchId);
+    };
+    const eligible = [];
+    items.forEach((it, i) => {
+      const o = out[i], job = it.job;
+      if (!job || normalizeMode(job.mode) === 'safe' || job.status !== 'awaiting-approval') {
+        o.reason = 'not-awaiting'; o.why = 'Job is not awaiting approval.';
+        if (job) this.#auditPin(job, 'refused:not-awaiting', batchId);
+        return;
+      }
+      const early = this.#precheck(job, { job: job.id, approval: it.approval });
+      if (early) { o.reason = early.reason; o.why = early.message; this.#auditPin(job, `refused:${early.reason}`, batchId); return; }
+      eligible.push(o);
+    });
+    if (!eligible.length) return out;
+    const record = readPin(this.stateDir);
+    if (!record) { for (const o of eligible) { o.reason = 'no-pin'; o.why = PIN_MESSAGE; } return out; }
+    this.pinFailures = this.pinFailures.filter((t) => this.now() - t < PIN_LOCK_MS);
+    if (this.pinFailures.length >= MAX_PIN_TRIES) {
+      for (const o of eligible) refuse(o, 'locked', 'locked', 'Too many incorrect PIN attempts; wait five minutes.');
+      return out;
+    }
+    if (!verifyPin(pin, record)) {
+      this.pinFailures.push(this.now()); // one attempt for the whole batch
+      for (const o of eligible) refuse(o, 'wrong-pin', 'wrong-pin', 'Incorrect approval PIN.');
+      return out;
+    }
+    for (const o of eligible) {
+      const why = this.#unchanged(o.job);
+      if (why) { refuse(o, 'mismatch', 'changed', why); continue; }
+      o.job.approvedByPin = true;
+      o.job.approvedAt = this.now();
+      o.job.approvedPinVersion = digest(record);
+      this.#auditPin(o.job, 'approved-batch', batchId);
+    }
+    return out;
+  }
+
   #unchanged(job) {
     try {
       if (elevatedFolder(job.folder, this.workRoot, this.hardRoot).toLowerCase() !== job.folder.toLowerCase()) return 'Job folder changed; propose it again.';
@@ -207,11 +260,11 @@ export class FullModePolicy {
     return this.#unchanged(job);
   }
 
-  audit(job, outcome) {
+  audit(job, outcome, batchId) {
     if (normalizeMode(job.mode) === 'safe') return;
     fs.mkdirSync(this.stateDir, { recursive: true });
     fs.appendFileSync(path.join(this.stateDir, 'fullmode-audit.log'), JSON.stringify({
-      time: new Date(this.now()).toISOString(), jobId: job.id, mode: job.mode,
+      time: new Date(this.now()).toISOString(), jobId: job.id, mode: job.mode, ...(batchId ? { batchId } : {}),
       folder: job.folder, agent: job.agent, title: job.title,
       approvedByPin: job.approvedByPin === true ? 'yes' : 'no', outcome: String(outcome),
     }) + '\n', { mode: 0o600 });

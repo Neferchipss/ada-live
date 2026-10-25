@@ -26,6 +26,7 @@ const THREAD = 'ada';
 const MAX_WORKERS = 2;
 const MAX_JOBS_PER_TURN = 5;
 const MAX_TEXT = 8000;
+const MAX_BATCH = 20;       // jobs in one approve-batch / deny-batch
 const CLOCK_SKEW = 10 * 60e3;
 const RECAP_MESSAGES = 30;
 const newId = () => crypto.randomBytes(5).toString('hex');
@@ -178,6 +179,8 @@ export class ChatHub {
     if (cmd.type === 'cancel') return this.#cancel(cmd.job);
     if (cmd.type === 'approve') return this.#approve(cmd);
     if (cmd.type === 'deny') return this.#deny(cmd);
+    if (cmd.type === 'approve-batch') return this.#approveBatch(cmd);
+    if (cmd.type === 'deny-batch') return this.#denyBatch(cmd);
     if (cmd.type === 'kill') return this.#kill(cmd.job);
     if (cmd.type === 'override-hold') return this.#overrideHold(cmd);
     if (cmd.type === 'stop') return this.#stop();
@@ -220,16 +223,16 @@ export class ChatHub {
 
   // ---- ops/full jobs: approval, kill, audit ----
 
-  #audit(j, outcome) {
-    try { this.policy.audit(j, outcome); return null; }
+  #audit(j, outcome, batchId) {
+    try { this.policy.audit(j, outcome, batchId); return null; }
     catch (e) { return `(audit log failed: ${e.message})`; }
   }
 
   // Tells Ada (and the chat) about a job that ended without running to completion.
-  #report(j, status, result) {
+  #report(j, status, result, batchId) {
     const t = this.t;
     j.status = status; j.endedAt = this.now(); j.result = result;
-    const auditError = this.#audit(j, status);
+    const auditError = this.#audit(j, status, batchId);
     if (auditError) j.result += ` ${auditError}`;
     this.appendTaskEvent({ id: j.id, mode: j.mode, agent: j.agent, title: j.title, cwd: j.folder, by: 'ada-chat', status: 'failed', preview: clip(j.result, 240) });
     this.#post({ role: 'system', text: `${j.mode.toUpperCase()} job "${j.title}": ${j.result}` });
@@ -286,6 +289,57 @@ export class ChatHub {
     if (!j || j.status !== 'awaiting-approval' || normalizeMode(j.mode) === 'safe') return 'not awaiting approval';
     if (typeof cmd.approval !== 'string' || cmd.approval !== j.approvalId) return 'approval does not match this job';
     this.#report(j, 'denied', 'Nefer denied this job; nothing ran.');
+    this.#scheduleExpiry();
+    this.#changed();
+    this.#maybeReport();
+    return null;
+  }
+
+  // Shape check for approve-batch / deny-batch: 1..MAX_BATCH entries, each { job, approval } strings, job ids unique.
+  #batchEntries(cmd) {
+    const list = cmd.jobs;
+    if (!Array.isArray(list) || !list.length) return { err: 'no jobs selected' };
+    if (list.length > MAX_BATCH) return { err: `at most ${MAX_BATCH} jobs per batch` };
+    const ids = new Set();
+    for (const e of list) {
+      if (!e || typeof e.job !== 'string' || !e.job || e.job.length > 64 || typeof e.approval !== 'string' || !e.approval || e.approval.length > 128) return { err: 'bad batch entry' };
+      if (ids.has(e.job)) return { err: 'duplicate job in batch' };
+      ids.add(e.job);
+    }
+    return { entries: list.map((e) => ({ job: e.job, approval: e.approval })), batchId: `b-${newId()}` };
+  }
+
+  #approveBatch(cmd) {
+    const { err, entries, batchId } = this.#batchEntries(cmd);
+    if (err) return err;
+    if (typeof cmd.pin !== 'string' || !cmd.pin || cmd.pin.length > 128) return 'bad batch entry';
+    const items = entries.map((e) => ({ job: this.state.jobs.find((x) => x.id === e.job), approval: e.approval }));
+    const results = this.policy.approveBatch(items, cmd.pin, batchId);
+    let approved = 0;
+    results.forEach((r, i) => {
+      const j = r.job;
+      if (r.why) { if (j) this.#post({ role: 'system', text: `Approval for "${j.title}" was refused: ${r.why}` }); return; }
+      approved++;
+      j.status = 'queued';
+      this.appendTaskEvent({ id: j.id, mode: j.mode, agent: j.agent, title: j.title, cwd: j.folder, by: 'ada-chat', status: 'queued', preview: 'Approved on the phone' });
+    });
+    this.#scheduleExpiry();
+    this.#changed();
+    this.#pump();
+    return approved ? null : results.find((r) => r.why)?.why || 'nothing approved';
+  }
+
+  #denyBatch(cmd) {
+    const { err, entries, batchId } = this.#batchEntries(cmd);
+    if (err) return err;
+    let denied = 0;
+    for (const e of entries) {
+      const j = this.state.jobs.find((x) => x.id === e.job);
+      if (!j || j.status !== 'awaiting-approval' || normalizeMode(j.mode) === 'safe' || e.approval !== j.approvalId) continue;
+      this.#report(j, 'denied', 'Nefer denied this job; nothing ran.', batchId);
+      denied++;
+    }
+    if (!denied) return 'nothing denied';
     this.#scheduleExpiry();
     this.#changed();
     this.#maybeReport();

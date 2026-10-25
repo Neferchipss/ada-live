@@ -90,3 +90,48 @@ export function approvalMessage(j, now) {
   if (n.reason === 'mismatch') return { kind: 'mismatch', text: 'This approval changed. Ask Ada to propose it again.', locked: false, remainingMs: 0 };
   return { kind: 'none', text: '', locked: false, remainingMs: 0 };
 }
+
+// ---- multi-select: tick pending jobs, approve or deny them together ----
+
+export const MAX_BATCH = 20; // the collector accepts at most this many jobs per batch command
+
+// Only an open (unexpired) approval can be ticked.
+export const selectable = (j, now) => j?.status === 'awaiting-approval' && gated(j) && isOpen(j, now);
+
+const selectableJobs = (jobs, now) => (jobs || []).filter((j) => selectable(j, now));
+
+// Selection survives snapshots; ids whose job left awaiting-approval (or expired) drop out.
+export function pruneSelection(sel, jobs, now) {
+  const ok = new Set(selectableJobs(jobs, now).map((j) => j.id));
+  return new Set([...(sel || [])].filter((id) => ok.has(id)));
+}
+
+export const selectAll = (jobs, now) => new Set(selectableJobs(jobs, now).slice(0, MAX_BATCH).map((j) => j.id));
+export const selectOps = (jobs, now) => new Set(selectableJobs(jobs, now).filter((j) => j.mode === 'ops').slice(0, MAX_BATCH).map((j) => j.id));
+
+export function toggleSelection(sel, id, jobs, now) {
+  const next = new Set(sel || []);
+  if (next.has(id)) next.delete(id);
+  else if (next.size < MAX_BATCH && selectable((jobs || []).find((j) => j.id === id), now)) next.add(id);
+  return next;
+}
+
+// Selected jobs in list order, with the counts the action bar and the dialog show.
+export function selectionView(sel, jobs, now) {
+  const picked = selectableJobs(jobs, now).filter((j) => sel?.has(j.id));
+  return { jobs: picked, n: picked.length, full: picked.filter((j) => j.mode === 'full').length, ops: picked.filter((j) => j.mode === 'ops').length };
+}
+
+// The sealed command entries for a selection: each job with its own approval id.
+export const batchEntries = (picked) => picked.map((j) => ({ job: j.id, approval: j.approvalId }));
+
+// One line for the batch dialog: a lockout beats a wrong-PIN count; both come from the jobs' approvalNote.
+export function batchMessage(picked, now) {
+  const msgs = picked.map((j) => approvalMessage(j, now));
+  const locked = msgs.find((m) => m.locked);
+  if (locked) return locked;
+  return msgs.find((m) => m.kind === 'wrong-pin') || { kind: 'none', text: '', locked: false, remainingMs: 0 };
+}
+
+// Key of the newest refusal across a selection, so a late snapshot from an older attempt is not mistaken for the answer.
+export const batchNoteKey = (picked) => picked.map(noteKey).join('|');

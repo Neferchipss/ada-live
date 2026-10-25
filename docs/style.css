@@ -746,3 +746,21 @@ body:not(.in-chat) .sv-actions { display: none; }
 .mp-leaf .mp-card[data-s='failed'] .sv-dot { background: var(--red); }
 .mp-leaf .mp-card[data-agent='codex'] .mp-ag { color: var(--codex); }
 @media (prefers-reduced-motion: reduce) { .mp-leaf .sv-dot, .mp-root .sv-dot, .mp-caret { animation: none !important; transition: none !important; } .mp-leaf .mp-card[data-s='working'] .sv-dot { box-shadow: 0 0 0 2px rgba(76, 208, 138, .35); } }
+
+/* Approvals: multi-select */
+.appr-select { display: flex; gap: 8px; flex-wrap: wrap; }
+.appr-select button { min-height: 44px; border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 8px 16px; font: 600 12px var(--mono); cursor: pointer; }
+.appr-pick { display: flex; align-items: center; gap: 12px; min-height: 48px; margin: -4px -4px 0; padding: 4px; font: 600 13px var(--mono); color: var(--muted); cursor: pointer; }
+.appr-pick input { width: 28px; height: 28px; flex: none; accent-color: var(--amber); }
+.appr-item[data-picked] { border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber); }
+.appr-why { margin: 0; font-size: 13px; color: #ff5d73; }
+.appr-actions { position: sticky; bottom: 0; display: flex; gap: 10px; padding: 10px 0 calc(6px + var(--safe-b)); background: var(--bg-2); border-top: 1px solid var(--line); }
+.appr-actions[hidden] { display: none; }
+.appr-actions button { flex: 1 1 0; min-height: 48px; }
+.batch-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 34vh; overflow: auto; }
+.batch-list li { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 13px; overflow-wrap: anywhere; }
+.batch-list .tl-warn { display: block; margin-top: 4px; font-size: 12px; }
+#batch-pin { width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); font: 16px var(--mono); padding: 10px; }
+#batch-error { margin: 0; font-size: 13px; color: #ff5d73; }
+#batch-error[data-kind='busy'] { color: var(--muted); }
+#batch-submit { justify-self: stretch; border-radius: 12px; padding: 12px; }

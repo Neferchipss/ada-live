@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=sv-5">
+  <link rel="stylesheet" href="style.css?v=sv-6">
 </head>
 <body>
   <!-- Locked: nothing below is readable until the password decrypts the feed. -->
@@ -164,9 +164,31 @@
       <div class="sheet-card appr-card">
         <div class="sheet-grab"></div>
         <h4 id="approvals-title">Approvals</h4>
+        <div class="appr-select" id="appr-select" hidden>
+          <button type="button" data-sel="all">Select all</button>
+          <button type="button" data-sel="ops" id="appr-sel-ops">Select ops</button>
+          <button type="button" data-sel="clear">Clear</button>
+        </div>
         <div id="appr-list" aria-live="polite"></div>
         <button type="button" class="sheet-close" data-close>Done</button>
+        <div class="appr-actions" id="appr-actions" hidden>
+          <button type="button" class="tl-approve" id="appr-batch-approve" data-batch="approve">Approve</button>
+          <button type="button" class="tl-cancel" id="appr-batch-deny" data-batch="deny">Deny</button>
+        </div>
       </div>
+    </div>
+    <div class="sheet" id="batch-sheet" hidden role="dialog" aria-modal="true" aria-labelledby="batch-title">
+      <form class="sheet-card approval-card" id="batch-form" autocomplete="off" onsubmit="return false">
+        <div class="sheet-grab"></div>
+        <h4 id="batch-title">Approve jobs</h4>
+        <p class="sheet-note">One PIN approves each job below separately. Every job keeps its own approval window; pushes, publishing and deployment are prohibited.</p>
+        <ul class="batch-list" id="batch-list"></ul>
+        <label class="approval-label" for="batch-pin">Approval PIN</label>
+        <input id="batch-pin" type="password" inputmode="numeric" autocomplete="off" maxlength="128" required>
+        <p class="error" id="batch-error" role="alert"></p>
+        <button class="tl-approve" id="batch-submit" type="submit">Approve</button>
+        <button class="sheet-close" type="button" data-close>Cancel</button>
+      </form>
     </div>
     <div class="sheet" id="approval-sheet" hidden role="dialog" aria-modal="true" aria-labelledby="approval-title">
       <form class="sheet-card approval-card" id="approval-form" autocomplete="off" onsubmit="return false">
@@ -204,6 +226,6 @@
       setTimeout(function () { if (!window.__adaBooted) say("Page failed to load (the script did not start). Reload, or clear this site's cache."); }, 4000);
     })();
   </script>
-  <script src="app.js?v=sv-5" type="module"></script>
+  <script src="app.js?v=sv-6" type="module"></script>
 </body>
 </html>

@@ -2,10 +2,10 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=sv-5';
-import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-5';
-import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-5';
-import { buildSessionMap, activeCount, RECENT_ID } from './session-map.mjs?v=sv-5';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG, selectable, pruneSelection, selectAll, selectOps, toggleSelection, selectionView, batchEntries, batchMessage } from './approvals.mjs?v=sv-6';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-6';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-6';
+import { buildSessionMap, activeCount, RECENT_ID } from './session-map.mjs?v=sv-6';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -589,7 +589,10 @@ let chatKey = '';               // skip re-rendering when nothing changed
 const outbox = new Map();       // cid -> { text, t, failed, why }
 const openJobs = new Set();
 let approvalTarget = null; // Job id + approval challenge + refusal key only; never a PIN.
-let approvalTimer = null; // 1s tick while the PIN dialog is open (expiry + lockout countdowns)
+let approvalTimer = null;
+let apprSel = new Set(); // job ids ticked in the Approvals sheet (ids only; survives snapshots, pruned in renderApprovals)
+let batchTarget = null; // { entries: [{ id, approval }], baseKey, submitting, notice, sendTimer, refocus }; never a PIN
+let batchTimer = null; // 1s tick while the PIN dialog is open (expiry + lockout countdowns)
 const pendingJobActions = new Set();
 let brainPref = { agent: 'claude', model: '' };
 try { brainPref = { ...brainPref, ...JSON.parse(localStorage.getItem('ada-brain') || '{}') }; } catch {}
@@ -1215,8 +1218,14 @@ function approvalItem(j) {
   const mode = jobMode(j);
   const op = mode === 'ops' ? j.operation : null;
   const controls = approvalOpen(j) ? approvalControls(j) : '<p class="tl-warn">Expired</p><div class="job-buttons"><button class="tl-approve" type="button" disabled>Expired</button></div>';
-  return `<article class="appr-item" data-appr="${esc(j.id)}" data-mode="${mode}">
+  const now = Date.now();
+  const pick = selectable(j, now) ? `<label class="appr-pick"><input type="checkbox" data-pick="${esc(j.id)}" ${apprSel.has(j.id) ? 'checked' : ''}>Select</label>` : '';
+  const m = approvalOpen(j) ? approvalMessage(j, now) : null;
+  const why = m && (m.kind === 'mismatch' || m.kind === 'locked' || (m.kind === 'wrong-pin' && apprSel.has(j.id))) ? `<p class="appr-why">${esc(m.text)}</p>` : '';
+  return `<article class="appr-item" data-appr="${esc(j.id)}" data-mode="${mode}"${apprSel.has(j.id) ? ' data-picked' : ''}>
+    ${pick}
     <div class="tl-title">${modeBadge(j)}${esc(j.title)}</div>
+    ${why}
     <div class="tl-row"><b>Agent</b><span>${esc(mode === 'ops' ? 'Collector · allowlisted operation' : brainLabel(j))}</span></div>
     <div class="tl-row"><b>Project</b><span>${esc(short(j.folder).split(' / ').pop())}</span></div>
     <div class="tl-row"><b>Folder</b><span>${esc(mode === 'safe' ? short(j.folder) : j.folder)}</span></div>
@@ -1232,6 +1241,7 @@ function renderApprovals() {
   const pending = pendingApprovals(jobs, now);
   const open = openApprovals(jobs, now);
   const hist = resolvedGroups(jobs, now);
+  apprSel = pruneSelection(apprSel, jobs, now);
 
   const found = newApprovals(jobs, seenApprovals, now);
   seenApprovals = found.seen;
@@ -1244,13 +1254,21 @@ function renderApprovals() {
   const soon = soonestExpiry(jobs, now);
   document.querySelectorAll('[data-appr-left]').forEach((el) => { el.textContent = soon ? countdown(soon - now) : ''; });
 
-  const key = JSON.stringify([pending.map((j) => [j.id, approvalOpen(j), noteKey(j)]), hist.ran.map((j) => [j.id, j.status]), hist.lapsed.map((j) => j.id), wsLive, data?.chat?.fullModePinSet]);
+  const key = JSON.stringify([pending.map((j) => [j.id, approvalOpen(j), noteKey(j)]), hist.ran.map((j) => [j.id, j.status]), hist.lapsed.map((j) => j.id), wsLive, data?.chat?.fullModePinSet, [...apprSel]]);
   if (key === apprKey) return;
   apprKey = key;
   const act = document.activeElement;
-  const focused = act?.dataset?.approve ? 'approve' : act?.dataset?.deny ? 'deny' : null;
+  const focused = act?.dataset?.approve ? 'approve' : act?.dataset?.deny ? 'deny' : act?.dataset?.pick ? 'pick' : null;
   const focusedId = focused && act.dataset[focused];
   $('#appr-list').innerHTML = pending.length ? pending.map(approvalItem).join('') : '<p class="appr-empty">Nothing waiting for approval.</p>';
+  const sv = selectionView(apprSel, jobs, now);
+  $('#appr-select').hidden = !open.length;
+  $('#appr-sel-ops').hidden = !open.some((j) => j.mode === 'ops');
+  $('#appr-actions').hidden = !sv.n;
+  $('#appr-batch-approve').textContent = `Approve ${sv.n}`;
+  $('#appr-batch-deny').textContent = `Deny ${sv.n}`;
+  $('#appr-batch-approve').disabled = !wsLive || !data?.chat?.fullModePinSet;
+  $('#appr-batch-deny').disabled = !wsLive;
   $('#act-hist').hidden = !hist.ran.length && !hist.lapsed.length; // no rows, no section
   const histRow = (j, cls = '') => {
     const t = j.endedAt || j.startedAt || j.createdAt;
@@ -1414,6 +1432,7 @@ async function sendChat(text, cid = rid()) {
 
 function setSheet(id, open) {
   if (id === '#approval-sheet' && !open) { $('#approval-pin').value = ''; clearTimeout(approvalTarget?.sendTimer); approvalTarget = null; clearInterval(approvalTimer); approvalTimer = null; }
+  if (id === '#batch-sheet' && !open) { $('#batch-pin').value = ''; clearTimeout(batchTarget?.sendTimer); batchTarget = null; clearInterval(batchTimer); batchTimer = null; }
   $(id).hidden = !open;
   document.body.classList.toggle('sheet-open', !!document.querySelector('.sheet:not([hidden])'));
 }
@@ -1431,6 +1450,7 @@ function syncJobActions() {
     el.disabled = !wsLive || !allowed || pendingJobActions.has(id);
   });
   if (approvalTarget) syncApprovalDialog();
+  if (batchTarget) syncBatchDialog();
 }
 
 // Keeps the PIN dialog in step with the job. State is keyed on job id + approvalNote.at, so a late
@@ -1473,6 +1493,81 @@ function openApproval(j) {
   setSheet('#approval-sheet', true);
   syncJobActions();
   $('#approval-pin').focus();
+}
+
+// ---- batch approve: one PIN dialog for every ticked job ----
+
+// The batch's jobs that can still be approved with the approval id they were ticked with.
+const batchLive = (target) => target.entries.map((e) => [currentJob(e.id), e.approval]).filter(([j, a]) => j && j.approvalId === a && selectable(j, Date.now())).map(([j]) => j);
+const batchKey = (target) => target.entries.map((e) => { const j = currentJob(e.id); return j ? `${j.status}:${noteKey(j)}` : 'gone'; }).join('|');
+
+function syncBatchDialog() {
+  const target = batchTarget, now = Date.now();
+  const live = batchLive(target);
+  if (target.submitting && batchKey(target) !== target.baseKey) { // the laptop answered this attempt
+    target.submitting = false;
+    clearTimeout(target.sendTimer);
+    target.refocus = true;
+    const m = batchMessage(live, now);
+    if (!live.length || (m.kind !== 'wrong-pin' && !m.locked)) { setSheet('#batch-sheet', false); return; } // PIN accepted: refusals show inline in the sheet
+  }
+  if (!live.length) { setSheet('#batch-sheet', false); return; }
+  const msg = batchMessage(live, now);
+  const ready = wsLive && data?.chat?.fullModePinSet && !msg.locked && !target.submitting;
+  $('#batch-title').textContent = `Approve ${live.length} job${live.length === 1 ? '' : 's'}`;
+  $('#batch-submit').textContent = `Approve ${live.length}`;
+  $('#batch-list').innerHTML = live.map((j) => `<li data-mode="${jobMode(j)}">${modeBadge(j)}${esc(j.title)}${jobMode(j) === 'full' ? '<span class="tl-warn">full mode: runs commands</span>' : ''}</li>`).join('');
+  $('#batch-submit').disabled = !ready;
+  const err = $('#batch-error');
+  err.textContent = !wsLive ? 'Laptop not connected. Reconnect before approving.' : target.submitting ? 'Checking PIN…' : target.notice || msg.text;
+  err.dataset.kind = target.submitting ? 'busy' : msg.kind;
+  if (!ready) $('#batch-pin').value = '';
+  if (target.refocus && ready) { target.refocus = false; $('#batch-pin').focus(); }
+}
+
+function openBatch() {
+  const sv = selectionView(apprSel, data?.chat?.jobs || [], Date.now());
+  if (!wsLive || !sv.n || !data?.chat?.fullModePinSet) return;
+  batchTarget = { entries: sv.jobs.map((j) => ({ id: j.id, approval: j.approvalId })), baseKey: '', submitting: false, notice: '', sendTimer: null, refocus: false };
+  batchTarget.baseKey = batchKey(batchTarget);
+  $('#batch-pin').value = '';
+  clearInterval(batchTimer);
+  batchTimer = setInterval(() => { if (batchTarget) syncBatchDialog(); }, 1000);
+  setSheet('#batch-sheet', true);
+  syncBatchDialog();
+  $('#batch-pin').focus();
+}
+
+async function denyBatch() {
+  const sv = selectionView(apprSel, data?.chat?.jobs || [], Date.now());
+  if (!wsLive || !sv.n) return;
+  const ids = sv.jobs.map((j) => j.id);
+  ids.forEach((id) => pendingJobActions.add(id));
+  syncJobActions();
+  try { await sendCmd({ id: rid(), type: 'deny-batch', jobs: batchEntries(sv.jobs) }); }
+  catch { ids.forEach((id) => pendingJobActions.delete(id)); syncJobActions(); }
+  // Commands are not retried automatically. The next attempt always needs a new tap.
+  setTimeout(() => { ids.forEach((id) => pendingJobActions.delete(id)); syncJobActions(); }, 10000);
+}
+
+function approvalsSheetClick(e) {
+  if (jobActionClick(e)) return;
+  const sel = e.target.closest('[data-sel]');
+  if (sel) {
+    const jobs = data?.chat?.jobs || [], now = Date.now();
+    apprSel = sel.dataset.sel === 'all' ? selectAll(jobs, now) : sel.dataset.sel === 'ops' ? selectOps(jobs, now) : new Set();
+    apprKey = ''; renderApprovals();
+    return;
+  }
+  const b = e.target.closest('[data-batch]');
+  if (b) { if (b.dataset.batch === 'approve') openBatch(); else denyBatch(); }
+}
+
+function approvalsSheetChange(e) {
+  const pick = e.target.closest?.('[data-pick]');
+  if (!pick) return;
+  apprSel = toggleSelection(apprSel, pick.dataset.pick, data?.chat?.jobs || [], Date.now());
+  apprKey = ''; renderApprovals();
 }
 
 async function sendJobAction(button, cmd) {
@@ -1562,7 +1657,35 @@ function bindChat() {
       syncJobActions();
     } finally { pin = ''; }
   });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#approval-sheet').hidden) setSheet('#approval-sheet', false); });
+  $('#batch-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const target = batchTarget;
+    if (!target) return;
+    const live = batchLive(target);
+    if (!live.length || !wsLive || target.submitting || batchMessage(live, Date.now()).locked) { syncJobActions(); return; }
+    let pin = $('#batch-pin').value;
+    $('#batch-pin').value = '';
+    if (!pin) { $('#batch-error').textContent = 'Enter your approval PIN.'; return; }
+    target.baseKey = batchKey(target); target.notice = ''; target.submitting = true;
+    syncJobActions();
+    try {
+      await sendCmd({ type: 'approve-batch', id: rid(), jobs: live.map((j) => ({ job: j.id, approval: j.approvalId })), pin });
+      // Stays open until the laptop answers: refusals come back as approvalNote on the jobs.
+      target.sendTimer = setTimeout(() => {
+        if (batchTarget !== target || !target.submitting) return;
+        target.submitting = false; target.refocus = true; target.notice = 'No answer from the laptop. Re-enter the PIN to try again.';
+        syncJobActions();
+      }, 15000);
+    } catch {
+      target.submitting = false; target.refocus = true; target.notice = 'Approval was not sent. Re-enter the PIN to try again.';
+      syncJobActions();
+    } finally { pin = ''; }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!$('#batch-sheet').hidden) setSheet('#batch-sheet', false);
+    else if (!$('#approval-sheet').hidden) setSheet('#approval-sheet', false);
+  });
   $('#chat-reset').addEventListener('click', () => {
     sendCmd({ type: 'reset', id: rid() }).catch(() => {});
     setSheet('#chat-sheet', false);
@@ -1572,7 +1695,8 @@ function bindChat() {
     brainPref.model = b.dataset.model;
     saveBrain(); chatKey = ''; renderChat(); setSheet('#brain-sheet', false);
   });
-  $('#approvals-sheet').addEventListener('click', jobActionClick);
+  $('#approvals-sheet').addEventListener('click', approvalsSheetClick);
+  $('#approvals-sheet').addEventListener('change', approvalsSheetChange);
   $('#work-strip').addEventListener('click', stripClick);
   $('#work-strip').addEventListener('keydown', (e) => {
     if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-sv-open]')) { e.preventDefault(); const [a, id] = e.target.dataset.svOpen.split('|'); selectSession(a, id); }

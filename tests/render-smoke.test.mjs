@@ -10,7 +10,7 @@ const APP = fs.readFileSync(new URL('../docs/app.js', import.meta.url), 'utf8');
 const tick = (ms = 50) => new Promise((r) => setTimeout(r, ms));
 let n = 0;
 
-async function unlockWith(snap, { typed = 'test-pass', sealedWith = 'test-pass' } = {}) {
+async function unlockWith(snap, { typed = 'test-pass', sealedWith = 'test-pass', after } = {}) {
   const d = installDom({ feed: sealFor(snap, sealedWith) });
   try {
     await import(`../docs/app.js?smoke=${++n}`);
@@ -29,6 +29,7 @@ async function unlockWith(snap, { typed = 'test-pass', sealedWith = 'test-pass' 
       errors: bar.hidden ? [] : bar.children.map((c) => c.textContent),
       html: Object.fromEntries(['chat-ctx', 'work-strip', 'act-attn', 'act-hist-list', 'act-tiles', 'act-now', 'act-projects', 'work', 'chat-log'].map((id) => [id, d.els.get(id).innerHTML])),
       hidden: { ctx: d.els.get('chat-ctx').hidden, toast: d.els.get('toast').hidden },
+      extra: after ? await after(d) : undefined,
     };
   } finally { d.restore(); }
 }
@@ -191,4 +192,39 @@ test('a job carrying a wrong-pin note renders the retry tag and the page still u
   assert.match(r.html['chat-log'] + r.html['work-strip'], /appr-retry[^>]*>PIN incorrect · tap to retry/);
   s.chat.jobs[0].approvalNote = { reason: 'locked', at: now - 1000, attemptsLeft: 0, lockedUntil: now + 200e3 };
   assertUnlocked(await unlockWith(s), 'locked note');
+});
+
+test('approvals sheet: three pending items render checkboxes, a selection shows the action bar and counts', async () => {
+  const s = realistic();
+  const mk = (id, mode, title) => ({ id, folder: 'C:\Work\Personal\proj', agent: 'claude', model: 'm', title, status: 'awaiting-approval', createdAt: now - min, mode, prompt: 'p', approvalExpiresAt: now + 4 * min, approvalId: `ap-${id}` });
+  s.chat.jobs = [mk('p1', 'ops', 'Echo one'), mk('p2', 'full', 'Full two'), mk('p3', 'ops', 'Echo three'), { ...mk('p4', 'full', 'Late'), approvalExpiresAt: now - 5000 }];
+  const pick = (id) => ({ target: { closest: (sel) => (sel === '[data-pick]' ? { dataset: { pick: id } } : null) } });
+  const r = await unlockWith(s, {
+    after: async (d) => {
+      const sheet = d.els.get('approvals-sheet');
+      const snap = () => ({ list: d.els.get('appr-list').innerHTML, bar: d.els.get('appr-actions').hidden, approve: d.els.get('appr-batch-approve').textContent, deny: d.els.get('appr-batch-deny').textContent, header: d.els.get('appr-select').hidden });
+      const before = snap();
+      await sheet.fire('change', pick('p1'));
+      await sheet.fire('change', pick('p2'));
+      await sheet.fire('change', pick('p4')); // expired: not selectable
+      const two = snap();
+      await sheet.fire('click', { target: { closest: (sel) => (sel === '[data-sel]' ? { dataset: { sel: 'ops' } } : null) } });
+      const ops = snap();
+      await sheet.fire('click', { target: { closest: (sel) => (sel === '[data-sel]' ? { dataset: { sel: 'clear' } } : null) } });
+      return { before, two, ops, cleared: snap() };
+    },
+  });
+  assertUnlocked(r, 'approvals sheet');
+  const { before, two, ops, cleared } = r.extra;
+  const boxes = (h) => (h.match(/data-pick="/g) || []).length;
+  assert.equal(boxes(before.list), 3, 'three open items get a checkbox; the expired one does not');
+  assert.equal(before.bar, true);
+  assert.equal(before.header, false);
+  assert.equal(two.bar, false);
+  assert.equal(two.approve, 'Approve 2');
+  assert.equal(two.deny, 'Deny 2');
+  assert.equal((two.list.match(/ checked>/g) || []).length, 2);
+  assert.equal(ops.approve, 'Approve 2', 'Select ops picks the two ops items');
+  assert.doesNotMatch(ops.list.match(/data-appr="p2"[\s\S]*?<\/article>/)[0], / checked>/);
+  assert.equal(cleared.bar, true);
 });

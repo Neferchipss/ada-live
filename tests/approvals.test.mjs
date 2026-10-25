@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { pendingApprovals, openApprovals, soonestExpiry, recentResolved, outcomeLabel, countdown, newApprovals, GRACE_MS, approvalMessage, needsPinRetry, noteKey, RETRY_TAG, EXPIRED_TEXT } from '../docs/approvals.mjs';
+import { pendingApprovals, openApprovals, soonestExpiry, recentResolved, outcomeLabel, countdown, newApprovals, GRACE_MS, approvalMessage, needsPinRetry, noteKey, RETRY_TAG, EXPIRED_TEXT, selectable, pruneSelection, selectAll, selectOps, toggleSelection, selectionView, batchEntries, batchMessage, MAX_BATCH } from '../docs/approvals.mjs';
 
 const NOW = 1_000_000;
 const job = (id, o = {}) => ({ id, mode: 'ops', status: 'awaiting-approval', createdAt: NOW - 1000, approvalExpiresAt: NOW + 60e3, ...o });
@@ -61,11 +61,11 @@ test('new approvals: first snapshot seeds, each job reported once', () => {
 test('page wiring: panel, review button, no duplicate strip buttons, cache-bust', () => {
   const read = (f) => fs.readFileSync(fileURLToPath(new URL(`../docs/${f}`, import.meta.url)), 'utf8');
   const app = read('app.js'), html = read('index.html');
-  assert.match(app, /from '\.\/approvals\.mjs\?v=sv-5'/);
+  assert.match(app, /from '\.\/approvals\.mjs\?v=sv-6'/);
   assert.doesNotMatch(html, /id="appr-bar"/, 'the approvals bar is merged into the workers strip line');
   assert.match(app, /data-ws-appr/);
   assert.match(html, /id="approvals-sheet"/);
-  assert.match(html, /app\.js\?v=sv-5/);
+  assert.match(html, /app\.js\?v=sv-6/);
   const strip = app.slice(app.indexOf('function stripRow'), app.indexOf('function extRow'));
   assert.ok(!strip.includes('approvalControls'));
   assert.ok(strip.includes('data-review'));
@@ -120,4 +120,59 @@ test('helpers handle 30 minute and 5 minute windows', () => {
   assert.equal(soonestExpiry([ops, full], NOW + 6 * 60e3), NOW + 30 * 60e3);
   assert.equal(approvalMessage(ops, NOW + 29 * 60e3).kind, 'none');
   assert.equal(approvalMessage(ops, NOW + 30 * 60e3).kind, 'expired');
+});
+
+// ---- multi-select helpers ----
+
+const pend = () => [
+  job('o1', { mode: 'ops', approvalId: 'a1' }), job('f1', { mode: 'full', approvalId: 'a2' }), job('o2', { mode: 'ops', approvalId: 'a3' }),
+  job('late', { mode: 'ops', approvalExpiresAt: NOW - 1 }), job('run', { status: 'running' }), job('safe', { mode: 'safe' }),
+];
+
+test('selectable: open ops/full approvals only', () => {
+  assert.deepEqual(pend().map((j) => selectable(j, NOW)), [true, true, true, false, false, false]);
+});
+
+test('select all / select ops skip expired, non-pending and safe jobs', () => {
+  assert.deepEqual([...selectAll(pend(), NOW)], ['o1', 'f1', 'o2']);
+  assert.deepEqual([...selectOps(pend(), NOW)], ['o1', 'o2']);
+  const many = Array.from({ length: 25 }, (_, i) => job(`m${i}`));
+  assert.equal(selectAll(many, NOW).size, MAX_BATCH);
+});
+
+test('toggle adds and removes, refuses unknown/expired ids and the 21st', () => {
+  let sel = toggleSelection(new Set(), 'o1', pend(), NOW);
+  assert.deepEqual([...sel], ['o1']);
+  assert.deepEqual([...toggleSelection(sel, 'o1', pend(), NOW)], []);
+  assert.deepEqual([...toggleSelection(sel, 'late', pend(), NOW)], ['o1']);
+  assert.deepEqual([...toggleSelection(sel, 'nope', pend(), NOW)], ['o1']);
+  const many = Array.from({ length: 21 }, (_, i) => job(`m${i}`));
+  sel = selectAll(many, NOW);
+  assert.equal(toggleSelection(sel, 'm20', many, NOW).size, MAX_BATCH);
+});
+
+test('prune drops jobs that left awaiting-approval or expired; refused jobs stay selected', () => {
+  const jobs = pend();
+  const sel = new Set(['o1', 'f1', 'o2', 'late', 'gone']);
+  assert.deepEqual([...pruneSelection(sel, jobs, NOW)], ['o1', 'f1', 'o2']);
+  jobs[0].status = 'queued'; // approved
+  jobs[1].approvalNote = { reason: 'mismatch', at: NOW, attemptsLeft: 4, lockedUntil: null }; // refused, still waiting
+  assert.deepEqual([...pruneSelection(sel, jobs, NOW)], ['f1', 'o2']);
+  assert.deepEqual([...pruneSelection(sel, jobs, NOW + 61e3)], []);
+});
+
+test('selectionView counts and entries carry each job\'s own approval id', () => {
+  const v = selectionView(new Set(['o1', 'f1', 'late']), pend(), NOW);
+  assert.deepEqual([v.n, v.ops, v.full], [2, 1, 1]);
+  assert.deepEqual(batchEntries(v.jobs), [{ job: 'o1', approval: 'a1' }, { job: 'f1', approval: 'a2' }]);
+  assert.equal(selectionView(new Set(), pend(), NOW).n, 0);
+});
+
+test('batchMessage: lockout beats wrong-pin, both read from the jobs\' notes', () => {
+  const n = (o) => ({ at: NOW - 500, attemptsLeft: 3, lockedUntil: null, ...o });
+  assert.equal(batchMessage([job('a'), job('b')], NOW).kind, 'none');
+  assert.match(batchMessage([job('a', { approvalNote: n({ reason: 'wrong-pin' }) }), job('b', { approvalNote: n({ reason: 'wrong-pin' }) })], NOW).text, /Incorrect PIN · 3 tries left/);
+  const locked = batchMessage([job('a', { approvalNote: n({ reason: 'wrong-pin' }) }), job('b', { approvalNote: n({ reason: 'locked', attemptsLeft: 0, lockedUntil: NOW + 200e3 }) })], NOW);
+  assert.equal(locked.locked, true);
+  assert.match(locked.text, /try again in 3:20/);
 });
