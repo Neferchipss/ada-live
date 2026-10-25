@@ -12,6 +12,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { windowFromModelUsage } from './context.mjs';
+import { LineParser } from './stream.mjs';
 
 // Claude full mode can never push or deploy. These deny rules apply even with permissions bypassed.
 // Pattern matching is best-effort (it will not catch a push hidden inside a script).
@@ -57,8 +58,14 @@ export function killProcessTree(child) {
   try { child.kill(process.platform === 'win32' ? undefined : 'SIGKILL'); } catch {}
 }
 
+// Ada's head loads no MCP servers at all, not even the claude.ai connectors: --strict-mcp-config ignores every
+// other source and this config is empty (verified against the CLI's init event; see tests/stream.test.mjs).
+export const EMPTY_MCP_CONFIG = '{"mcpServers":{}}';
+
 export function claudeArgs({ role, model, resume, sessionId, systemFile, addDirs }) {
-  const a = ['-p', '--output-format', 'json', '--setting-sources', 'project', '--permission-prompts', 'none'];
+  // Only the head streams (partial messages, so the page can show her reply as it is written).
+  const a = ['-p', '--output-format', role === 'head' ? 'stream-json' : 'json', '--setting-sources', 'project', '--permission-prompts', 'none'];
+  if (role === 'head') a.push('--verbose', '--include-partial-messages', '--strict-mcp-config', '--mcp-config', EMPTY_MCP_CONFIG);
   if (role === 'worker') a.push('--permission-mode', 'acceptEdits');
   else if (role === 'full') a.push('--permission-mode', 'bypassPermissions', '--disallowedTools', ...FULL_DISALLOWED);
   else a.push('--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell');
@@ -84,7 +91,15 @@ export function codexArgs({ role, model, resume, cwd, lastMsg }) {
  * Starts a run. Returns { child, done } where done resolves to
  * { ok, text, session, code, error } (Claude also: contextWindow/contextModel when the CLI reports them).
  */
-export function runAgent({ agent, role, model, cwd, prompt, resume: resumeId, system, addDirs, onSession }) {
+/** The CLI's final JSON object (the "result" event, or the whole --output-format json reply) as the runner's result. */
+export function claudeResult(o, code, session) {
+  const denied = (o.permission_denials || []).map((d) => d.tool_name);
+  // modelUsage[model].contextWindow is the CLI's own window size; the transcript gives the current context (o.usage sums the whole turn).
+  const win = windowFromModelUsage(o.modelUsage);
+  return { ok: !o.is_error && code === 0, text: o.result || '', session: o.session_id || session, code, denied, cost: o.total_cost_usd, ...(win ? { contextWindow: win.window, contextModel: win.model } : {}) };
+}
+
+export function runAgent({ agent, role, model, cwd, prompt, resume: resumeId, system, addDirs, onSession, onStream }) {
   const lastMsg = path.join(os.tmpdir(), `ada-run-${crypto.randomBytes(4).toString('hex')}.txt`);
   const isClaude = agent === 'claude';
   const full = role === 'full';
@@ -101,6 +116,13 @@ export function runAgent({ agent, role, model, cwd, prompt, resume: resumeId, sy
 
   let out = '';
   let tail = '';
+  // The head streams events; the last "result" event is the source of truth for text, session, usage and cost.
+  const streaming = isClaude && role === 'head';
+  let resultEv = null;
+  const lines = streaming ? new LineParser((ev) => {
+    if (ev.type === 'result') resultEv = ev;
+    else { try { onStream?.(ev); } catch { /* a display hook must never break the turn */ } }
+  }) : null;
   let session = resume || sessionId;
   if (sessionId) onSession?.(sessionId);
   const child = spawn(isClaude ? 'claude' : 'codex', args, { cwd, windowsHide: true, env, shell: false });
@@ -111,12 +133,13 @@ export function runAgent({ agent, role, model, cwd, prompt, resume: resumeId, sy
   const grab = (d) => {
     const text = d.toString();
     watch?.(text);
-    if (isClaude) out += text;
+    if (streaming) lines.feed(text);
+    else if (isClaude) out += text;
     else if (!session) {
       session = text.match(/session id:\s*([0-9a-f-]{36})/i)?.[1] || null;
       if (session) onSession?.(session);
     }
-    tail = (tail + text).slice(-4000);
+    if (!streaming) tail = (tail + text).slice(-4000); // a stream's stdout is JSON events, useless as an error message
   };
   child.stdout.on('data', grab);
   child.stderr.on('data', (d) => { tail = (tail + d.toString()).slice(-4000); if (!isClaude) grab(d); });
@@ -128,11 +151,8 @@ export function runAgent({ agent, role, model, cwd, prompt, resume: resumeId, sy
       if (systemFile) try { fs.unlinkSync(systemFile); } catch {}
       if (isClaude) {
         try {
-          const o = JSON.parse(out.trim().split('\n').pop());
-          const denied = (o.permission_denials || []).map((d) => d.tool_name);
-          // modelUsage[model].contextWindow is the CLI's own window size; the transcript gives the current context (o.usage sums the whole turn).
-          const win = windowFromModelUsage(o.modelUsage);
-          return resolve({ ok: !o.is_error && code === 0, text: o.result || '', session: o.session_id || session, code, denied, cost: o.total_cost_usd, ...(win ? { contextWindow: win.window, contextModel: win.model } : {}) });
+          if (streaming) { lines.end(); if (!resultEv) throw new Error('no result event'); return resolve(claudeResult(resultEv, code, session)); }
+          return resolve(claudeResult(JSON.parse(out.trim().split('\n').pop()), code, session));
         } catch {
           return resolve({ ok: false, text: '', session, code, error: spawnErr?.message || tail.trim().split('\n').pop() || `exit ${code}` });
         }

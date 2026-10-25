@@ -2,10 +2,10 @@
 // The only thing it can send is an Ada chat message, sealed with the same key; the laptop
 // drops anything else, and Ada's workers run in safe mode.
 
-import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=sv-4';
-import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-4';
-import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-4';
-import { buildSessionMap, activeCount, RECENT_ID } from './session-map.mjs?v=sv-4';
+import { pendingApprovals, openApprovals, soonestExpiry, resolvedGroups, outcomeLabel, countdown, newApprovals, approvalMessage, needsPinRetry, noteKey, RETRY_TAG } from './approvals.mjs?v=sv-5';
+import { PROJECT_LIMIT, todayStats, needsAttention, attentionView, waitingApprovals, nowGroups, byProject, projectOf, timelineRows, taskTitle, parseDismissed, addDismissed, removeDismissed } from './activity-model.mjs?v=sv-5';
+import { ctxView, ctxNeedsFresh } from './context.mjs?v=sv-5';
+import { buildSessionMap, activeCount, RECENT_ID } from './session-map.mjs?v=sv-5';
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = 'ada-live-key';
@@ -593,6 +593,8 @@ let approvalTimer = null; // 1s tick while the PIN dialog is open (expiry + lock
 const pendingJobActions = new Set();
 let brainPref = { agent: 'claude', model: '' };
 try { brainPref = { ...brainPref, ...JSON.parse(localStorage.getItem('ada-brain') || '{}') }; } catch {}
+brainPref.agent = 'claude'; // Ada's head is always Claude; an older saved Codex choice is dropped
+if (!['', 'opus', 'sonnet', 'haiku'].includes(brainPref.model)) brainPref.model = '';
 const rid = () => [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
 const ICON = {
   spin: '<svg class="spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>',
@@ -1299,6 +1301,8 @@ function adaHead(t, b) {
   return `<div class="ada-head"><span class="ada-av">${ADA_MARK}</span><b>Ada</b>${b?.agent ? `<span class="via" data-agent="${esc(b.agent)}">${esc(brainLabel(b))}</span>` : ''}${t ? `<time data-ago="${t}">${ago(t)}</time>` : ''}</div>`;
 }
 
+function tookText(ms) { const s = Math.max(1, Math.round(ms / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`; }
+
 function brainLabel(b) { return `${agentLabel[b.agent] || b.agent}${b.model ? ` · ${b.model}` : ''}`; }
 
 function renderChat() {
@@ -1324,7 +1328,6 @@ function renderChat() {
   chip.innerHTML = `<i data-agent="${esc(brainPref.agent)}"></i>${esc(brainLabel(brainPref))}<svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>`;
   const models = chat.brains?.[brainPref.agent] || [''];
   $('#brain-models').innerHTML = models.map((m) => `<button type="button" data-model="${esc(m)}" class="${m === brainPref.model ? 'on' : ''}">${m ? esc(m) : 'Default model'}</button>`).join('');
-  document.querySelectorAll('#brain-seg button').forEach((b) => b.classList.toggle('on', b.dataset.brain === brainPref.agent));
 
   renderCtx();
   const nearBottom = log.scrollHeight - log.scrollTop - (log.clientHeight || 0) < 160; // the log scrolls inside its own container
@@ -1346,11 +1349,12 @@ function renderChat() {
   const visibleJobIds = new Set(t.messages.flatMap((m) => m.jobs || []));
   const olderPending = (chat.jobs || []).filter((j) => j.status === 'awaiting-approval' && !visibleJobIds.has(j.id));
   if (olderPending.length) rows.push(`<li class="msg ada"><h3 class="sec">Awaiting your approval</h3><div class="tools">${olderPending.map(jobCard).join('')}</div></li>`);
+  const lastAda = t.messages.findLast((m) => m.role === 'ada');
   for (const m of t.messages) {
     if (m.role === 'user') rows.push(`<li class="msg me">${m.text ? `<div class="bubble">${esc(m.text)}</div>` : ''}${attsHtml(m)}</li>`);
     else if (m.role === 'ada') {
       const cards = (m.jobs || []).map((id) => jobCard(jobs.get(id))).join('');
-      rows.push(`<li class="msg ada">${adaHead(m.t, m)}<div class="md">${md(m.text)}</div>${attsHtml(m)}${cards ? `<div class="tools">${cards}</div>` : ''}</li>`);
+      rows.push(`<li class="msg ada">${adaHead(m.t, m)}<div class="md">${md(m.text)}</div>${attsHtml(m)}${cards ? `<div class="tools">${cards}</div>` : ''}${m === lastAda && Number.isFinite(m.took) && !busy ? `<div class="took">replied in ${tookText(m.took)}</div>` : ''}</li>`);
     } else if (m.reset) rows.push(`<li class="divider"><span>Fresh context</span></li>`);
     else if (m.role === 'system') rows.push(`<li class="msg sys">${esc(m.text)}</li>`);
   }
@@ -1358,7 +1362,12 @@ function renderChat() {
     rows.push(`<li class="msg me ${o.failed ? 'failed' : 'sending'}"><div class="bubble">${esc(o.text)}</div>
       <span class="m-state">${o.failed ? `Not delivered${o.why ? ` (${esc(o.why)})` : ''} · <button type="button" class="link" data-retry="${cid}">Retry</button>` : 'Sending…'}</span></li>`);
   }
-  if (busy) rows.push(`<li class="msg ada">${adaHead(null, t.brain)}<div class="thinking">Thinking</div></li>`);
+  if (busy) {
+    // Same markup as the final message, so the streamed bubble is replaced in place. Status comes from the CLI's own tool events.
+    const st = t.streaming;
+    const text = st?.text || '';
+    rows.push(`<li class="msg ada streaming">${adaHead(null, t.brain)}${text ? `<div class="md">${md(text)}</div>` : ''}${st?.status || !text ? `<div class="thinking">${esc(st?.status || 'Thinking')}</div>` : ''}</li>`);
+  }
   log.innerHTML = rows.join('');
   syncJobActions();
 
@@ -1557,11 +1566,6 @@ function bindChat() {
   $('#chat-reset').addEventListener('click', () => {
     sendCmd({ type: 'reset', id: rid() }).catch(() => {});
     setSheet('#chat-sheet', false);
-  });
-  $('#brain-seg').addEventListener('click', (e) => {
-    const b = e.target.closest('[data-brain]'); if (!b) return;
-    brainPref = { agent: b.dataset.brain, model: '' };
-    saveBrain(); chatKey = ''; renderChat();
   });
   $('#brain-models').addEventListener('click', (e) => {
     const b = e.target.closest('[data-model]'); if (!b) return;

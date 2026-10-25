@@ -13,7 +13,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=sv-4">
+  <link rel="stylesheet" href="style.css?v=sv-5">
 </head>
 <body>
   <!-- Locked: nothing below is readable until the password decrypts the feed. -->
@@ -97,9 +97,8 @@
       <div class="sheet" id="brain-sheet" hidden>
         <div class="sheet-card">
           <div class="sheet-grab"></div>
-          <h4>Ada thinks with</h4>
-          <div class="seg" id="brain-seg"><button type="button" data-brain="claude">Claude</button><button type="button" data-brain="codex">Codex</button></div>
-          <p class="sheet-note">Applies from your next message. Switching brains hands over a recap of the recent chat.</p>
+          <h4>Ada thinks with Claude</h4>
+          <p class="sheet-note">Applies from your next message. Ada always uses Claude; workers can still use Claude or Codex.</p>
           <div class="model-list" id="brain-models"></div>
         </div>
       </div>
@@ -205,6 +204,6 @@
       setTimeout(function () { if (!window.__adaBooted) say("Page failed to load (the script did not start). Reload, or clear this site's cache."); }, 4000);
     })();
   </script>
-  <script src="app.js?v=sv-4" type="module"></script>
+  <script src="app.js?v=sv-5" type="module"></script>
 </body>
 </html>

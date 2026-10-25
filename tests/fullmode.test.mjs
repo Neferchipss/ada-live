@@ -274,14 +274,16 @@ test('the default ops file is created when absent and never overwritten', () => 
 test('safe-mode Claude arguments are unchanged for roles worker and head', () => {
   const base = ['-p', '--output-format', 'json', '--setting-sources', 'project', '--permission-prompts', 'none'];
   assert.deepEqual(claudeArgs({ role: 'worker' }), [...base, '--permission-mode', 'acceptEdits']);
-  assert.deepEqual(claudeArgs({ role: 'head' }), [...base, '--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell']);
+  // Deliberate change: the head streams (stream-json + partials) and loads no MCP servers; workers stay as they were.
+  const head = ['-p', '--output-format', 'stream-json', '--setting-sources', 'project', '--permission-prompts', 'none', '--verbose', '--include-partial-messages', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'];
+  assert.deepEqual(claudeArgs({ role: 'head' }), [...head, '--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell']);
   assert.deepEqual(
     claudeArgs({ role: 'worker', model: 'opus', resume: 'r1', systemFile: 'sys.md', addDirs: ['d1', 'd2'] }),
     [...base, '--permission-mode', 'acceptEdits', '--model', 'opus', '--resume', 'r1', '--append-system-prompt-file', 'sys.md', '--add-dir', 'd1', 'd2'],
   );
   assert.deepEqual(
     claudeArgs({ role: 'head', model: 'sonnet', addDirs: ['g'] }),
-    [...base, '--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell', '--model', 'sonnet', '--add-dir', 'g'],
+    [...head, '--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell', '--model', 'sonnet', '--add-dir', 'g'],
   );
 });
 

@@ -319,6 +319,10 @@ body.in-chat { overflow: hidden; }
 .md b { color: #fff; }
 .thinking { padding-left: 30px; font-size: 15px; font-weight: 500; background: linear-gradient(90deg, var(--dim) 0%, var(--text) 50%, var(--dim) 100%);
   background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.6s linear infinite; width: fit-content; }
+.msg.ada.streaming .md::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--dim); vertical-align: middle; animation: typing 1.1s ease-in-out infinite; }
+.msg.ada.streaming .thinking { margin-top: 2px; }
+@keyframes typing { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+.took { padding-left: 30px; margin-top: 3px; font: 10.5px var(--mono); color: var(--dim); }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 .msg.sys { align-self: center; text-align: center; font: 11.5px var(--mono); color: var(--dim); max-width: 92%; white-space: pre-wrap; }
 .divider { display: flex; align-items: center; gap: 10px; font: 10.5px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); }

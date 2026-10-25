@@ -148,11 +148,11 @@ test('head turn: context stored per brain, exposed in view(), cleared by a fresh
   assert.equal(learnedWindows()['claude-test-ctx-model'], 1000000, 'remembered so terminal sessions of that model get a percentage');
   assert.equal(JSON.parse(fs.readFileSync(path.join(h.state, 'chat.json'), 'utf8')).windows['claude-test-ctx-model'], 1000000, 'persisted');
 
+  // Deliberate change: Ada's head is Claude-only, so a Codex brain request still runs (and reports context) as Claude.
   await h.say('and codex', { brain: { agent: 'codex', model: '' } });
-  const x = h.hub.view().thread.context;
-  assert.deepEqual([x.agent, x.used, x.window], ['codex', 90230, 258400]);
-  await h.say('back', { brain: { agent: 'claude', model: '' } });
-  assert.equal(h.hub.view().thread.context.agent, 'claude', 'each brain keeps its own');
+  assert.equal(h.hub.view().thread.brain.agent, 'claude');
+  assert.equal(h.hub.view().thread.context.agent, 'claude');
+  assert.ok(calls.every(([agent]) => agent === 'claude'));
 
   assert.equal(h.hub.handle({ kind: 'cmd', id: 'reset1', ts: h.now(), type: 'reset' }), null);
   assert.equal(h.hub.view().thread.context, null, 'fresh context clears the bar');

@@ -19,6 +19,7 @@ import { activeMap, findConflict, liveLine, locate, isAdaSession, sessionActive,
 import { sessionTranscript } from './transcript.mjs';
 import { claudeSessionContext } from './claude.mjs';
 import { codexSessionContext } from './codex.mjs';
+import { StreamTracker, Throttle, appendTiming } from './stream.mjs';
 import { learnWindow, learnedWindows, loadWindows, makeContext } from './context.mjs';
 
 const THREAD = 'ada';
@@ -59,12 +60,13 @@ const GHOST = path.join(os.homedir(), 'Desktop', 'Ada', 'Ada', 'ada-ghost');
 const GHOST_PRIVATE = path.join(os.homedir(), 'Desktop', 'Ada', 'Ada', 'ada-ghost-private');
 const read = (p, max = Infinity) => { try { const s = fs.readFileSync(p, 'utf8'); return s.length > max ? s.slice(0, max) + '\n…(truncated — read the file for the rest)' : s; } catch { return ''; } };
 
-function codexModels() {
-  try {
-    const m = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.codex', 'models_cache.json'), 'utf8'));
-    return (m.models || m).map((x) => x.slug || x.id || x).filter((s) => typeof s === 'string' && !/review/.test(s));
-  } catch { return []; }
+// Ada's head is always Claude (workers still choose Claude or Codex per job). Anthropic models only.
+export const HEAD_MODELS = ['', 'opus', 'sonnet', 'haiku'];
+export function headBrain(b) {
+  const model = String(b?.model || '').slice(0, 60);
+  return { agent: 'claude', model: HEAD_MODELS.includes(model) || /^claude-[a-z0-9._-]+$/i.test(model) ? model : '' };
 }
+const STREAM_GAP = 333; // the page gets about three streamed updates a second
 
 export class ChatHub {
   constructor({ workRoot, projects, onChange, onRestart, stateDir = STATE_DIR, services = {}, mediaOut, relayMedia }) {
@@ -102,6 +104,8 @@ export class ChatHub {
     this.ffmpegOk = undefined;
     try { this.policy.operations(); } catch { /* invalid ops config is reported when proposed */ }
     this.procs = new Map(); // job id or 'head' -> child
+    this.streaming = null; // { text, status, at } while the head turn runs. Memory only: never written to chat.json.
+    this.timingFile = path.join(stateDir, 'timing.jsonl');
     this.state = { thread: null, jobs: [], projectSessions: {}, seen: [] };
     try { Object.assign(this.state, JSON.parse(fs.readFileSync(this.file, 'utf8'))); } catch {}
     this.state.uploadsDone ||= [];
@@ -112,6 +116,7 @@ export class ChatHub {
     sweeper.unref?.();
     this.state.thread ||= { id: THREAD, brain: { agent: 'claude', model: '' }, heads: {}, lastAgent: null, messages: [], pending: [], busy: false };
     const t = this.state.thread;
+    t.brain = headBrain(t.brain); // a saved Codex brain from before the Claude-only head moves over to Claude
     t.context ||= {}; // per brain: { agent, model, used, window, at } after the last head turn
     // Anything mid-flight when the collector stopped is gone now.
     for (const j of this.state.jobs) if (['running', 'queued', 'killing', 'awaiting-approval'].includes(j.status)) {
@@ -185,9 +190,7 @@ export class ChatHub {
     const text = String(cmd.text || '').trim().slice(0, MAX_TEXT);
     if (!text) return 'empty';
     const t = this.t;
-    if (cmd.brain) {
-      t.brain = { agent: cmd.brain.agent === 'codex' ? 'codex' : 'claude', model: String(cmd.brain.model || '').slice(0, 60) };
-    }
+    if (cmd.brain) t.brain = headBrain(cmd.brain); // the agent is always claude, whatever the page sent
     this.#post({ role: 'user', text, cid: cmd.id, brain: { ...t.brain } });
     this.#changed();
     if (!t.busy) this.#headTurn();
@@ -414,7 +417,8 @@ ${list}`;
   #headTurn() {
     const t = this.t;
     t.busy = true;
-    const { agent, model } = t.brain;
+    const agent = 'claude';
+    const { model } = t.brain;
     const results = t.pending.splice(0);
     const unanswered = t.messages.filter((m) => m.role === 'user' && !m.answered && !m.hold);
     const parts = [];
@@ -430,20 +434,27 @@ ${list}`;
     if (activity) parts.unshift(activity);
     const lastUser = unanswered.at(-1);
 
+    // Streamed text and tool phases reach the page through view() only, throttled; the final reply still comes from the result.
+    const startedAt = this.now();
+    const tracker = new StreamTracker(this.now);
+    const throttle = new Throttle((snap) => { this.streaming = { ...snap, at: this.now() }; this.onChange(); }, STREAM_GAP, { now: this.now });
     const run = this.runAgent({
       agent, role: 'head', model, cwd: this.workRoot,
       prompt: parts.join('\n\n'),
       resume,
-      // Claude takes the system prompt every turn (stays fresh); Codex only when its session starts.
-      system: agent === 'claude' || !resume ? this.#system() : null,
+      system: this.#system(), // Claude takes the system prompt every turn, so it stays fresh
       addDirs: [GHOST, GHOST_PRIVATE, this.inbox],
       onSession: (s) => { t.heads[agent] = s; this.#remember(s); },
+      onStream: (ev) => { if (tracker.feed(ev)) throttle.push(tracker.snapshot()); },
     });
     this.procs.set('head', run.child);
     this.#changed();
 
     run.done.then((r) => {
       const stopped = run.child.stopped;
+      throttle.cancel();
+      this.streaming = null;
+      const endedAt = this.now();
       this.procs.delete('head');
       if (r.session) { t.heads[agent] = r.session; this.#remember(r.session); }
       else if (resume && !r.ok) { delete t.heads[agent]; delete t.context[agent]; } // stale session: start fresh next time
@@ -451,7 +462,8 @@ ${list}`;
       if (!stopped) this.limits.note(agent, r);
       if (stopped) this.#post({ role: 'system', text: 'Stopped.' });
       else if (!r.ok) this.#post({ role: 'system', text: `Ada couldn't answer: ${clip(r.error || r.text || 'unknown error', 300)}` });
-      else { t.lastAgent = agent; this.#reply(r.text, lastUser, { agent, model }); }
+      else { t.lastAgent = agent; this.#reply(r.text, lastUser, { agent, model }, { took: Math.max(0, endedAt - startedAt) }); }
+      if (!stopped) appendTiming(this.timingFile, { startedAt, firstTokenAt: tracker.firstTokenAt, endedAt, ok: !!r.ok });
       t.busy = false;
       this.#changed();
       // More arrived while she was thinking.
@@ -471,7 +483,7 @@ ${list}`;
     } catch { /* the bar is a convenience: never fail a turn over it */ }
   }
 
-  #reply(raw, lastUser, brain) {
+  #reply(raw, lastUser, brain, extra = {}) {
     const t = this.t;
     const m = raw.match(/<jobs>\s*([\s\S]*?)\s*<\/jobs>/i);
     const am = raw.match(/<attach>\s*([\s\S]*?)\s*<\/attach>/i);
@@ -506,7 +518,7 @@ ${list}`;
     this.#post({
       role: 'ada',
       text: text || (waiting ? 'Waiting for your approval.' : jobs.length ? 'On it.' : atts.length ? 'Here.' : '…'),
-      jobs: jobs.map((j) => j.id), replyTo: lastUser?.id, ...(atts.length ? { atts: atts.map((a) => a.att) } : {}), ...brain,
+      jobs: jobs.map((j) => j.id), replyTo: lastUser?.id, ...(atts.length ? { atts: atts.map((a) => a.att) } : {}), ...brain, ...extra,
     });
     for (const a of atts) this.#prepareAtt(a.att, a.info, true);
     if (problems.length) this.#post({ role: 'system', text: problems.join('\n') });
@@ -549,7 +561,7 @@ ${list}`;
   // Phone upload finished (or timed out): post Nefer's message with cards, then let Ada see it once frames are ready.
   #uploadGroup(g) {
     const t = this.t;
-    if (g.brain) t.brain = { agent: g.brain.agent === 'codex' ? 'codex' : 'claude', model: String(g.brain.model || '').slice(0, 60) };
+    if (g.brain) t.brain = headBrain(g.brain);
     const items = [];
     const failed = [...g.failed];
     for (const f of g.done) {
@@ -947,9 +959,9 @@ ${j.prompt}`;
         return { ...j, ...note, mode, prompt: mode === 'safe' ? clip(prompt, 600) : String(prompt || '').slice(0, 12000), result: clip(j.result || '', 2000) };
       });
     return {
-      thread: { id: t.id, brain: t.brain, busy: t.busy, updatedAt: t.updatedAt, messages, total: t.messages.length, context: t.context?.[t.brain.agent] || null },
+      thread: { id: t.id, brain: t.brain, busy: t.busy, streaming: t.busy && this.streaming ? this.streaming : null, updatedAt: t.updatedAt, messages, total: t.messages.length, context: t.context?.[t.brain.agent] || null },
       jobs,
-      brains: { claude: ['', 'opus', 'sonnet', 'haiku'], codex: ['', ...codexModels()] },
+      brains: { claude: HEAD_MODELS },
       memory: fs.existsSync(path.join(GHOST_PRIVATE, 'memory.md')),
       safeMode: true, // the default every job starts in; ops/full are per-job and need approval
       fullModePinSet: this.policy.ready(),
