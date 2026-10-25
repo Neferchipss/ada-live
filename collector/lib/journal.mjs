@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { STATE_DIR } from './config.mjs';
-import { clip, normPath } from './util.mjs';
+import { clip, normPath, isNoisePath } from './util.mjs';
 
 export const JOURNAL_FILE = path.join(STATE_DIR, 'journal.json');
 const MAX_ENTRIES = 400;
@@ -22,7 +22,7 @@ const NOISE = [/^docs\/data\//];       // this viewer's own snapshot file change
 // Names that must never reach the journal, the phone or Ada's prompt.
 const SECRET = /(^|[\\/])\.env|token|password|passwd|credential|secret|(^|[\\/])\.git([\\/]|$)|\.ssh|\.pem$|\.key$|id_rsa/i;
 export const isSecretName = (p) => SECRET.test(String(p || ''));
-const isNoise = (p) => NOISE.some((r) => r.test(String(p || '').replace(/\\/g, '/')));
+const isNoise = (p) => NOISE.some((r) => r.test(String(p || '').replace(/\\/g, '/'))) || isNoisePath(p);
 
 const AGENT = { claude: 'Claude', codex: 'Codex' };
 const within = (child, parent) => child === parent || child.startsWith(parent + path.sep);
@@ -169,7 +169,14 @@ function entryText(e) {
 
 /** Pure digest for Ada's head turn: entries after `since`, grouped by project (newest first), within ~25 lines / ~3 KB. */
 export function buildDigest(entries, { since = 0, maxLines = 25, maxBytes = 3072, unpushed = [] } = {}) {
-  const fresh = entries.filter((e) => e.t > since).sort((a, b) => b.t - a.t);
+  // At most one 'uncommitted' line per project (the newest), listing up to 3 real paths.
+  const seenDirty = new Set();
+  const fresh = entries.filter((e) => e.t > since).sort((a, b) => b.t - a.t).filter((e) => {
+    if (e.kind !== 'dirty') return true;
+    if (seenDirty.has(e.project)) return false;
+    seenDirty.add(e.project);
+    return true;
+  }).map((e) => (e.kind === 'dirty' ? { ...e, files: (e.files || []).filter((f) => !isNoise(f) && !isSecretName(f)).slice(0, 3) } : e));
   // One line per project holding commits that no origin ref has yet (kept even when nothing else changed).
   const tail = unpushed.slice(0, 8).map((u) => `${clip(u.project, 60)}: ${u.ahead} commit${u.ahead === 1 ? '' : 's'} not pushed`);
   if (!fresh.length) return tail.join('\n');
@@ -200,6 +207,9 @@ export function buildDigest(entries, { since = 0, maxLines = 25, maxBytes = 3072
   return [...out, ...tail].join('\n');
 }
 
+// Same project's latest dirty line and a new one: same files, or at least one in common, means the same work continuing.
+const sharesFile = (a, b) => (a.files || []).some((f) => (b.files || []).includes(f)) || (!a.files?.length && !b.files?.length);
+
 export class Journal {
   constructor({ file = JOURNAL_FILE, now = Date.now } = {}) {
     this.file = file;
@@ -216,7 +226,16 @@ export class Journal {
 
   #prune() {
     const cutoff = this.now() - MAX_AGE;
-    const e = this.data.entries.filter((x) => x.t >= cutoff);
+    const e = [];
+    const lastOf = new Map();
+    for (const x of this.data.entries) {
+      if (x.t < cutoff) continue;
+      if (x.kind === 'dirty' && x.files?.length && x.files.every((f) => isNoise(f))) continue; // build output logged before the filter existed
+      const prev = lastOf.get(x.project);
+      if (prev && x.kind === 'dirty' && prev.kind === 'dirty' && prev.by === x.by && sharesFile(prev, x)) { Object.assign(prev, x); continue; }
+      lastOf.set(x.project, x);
+      e.push(x);
+    }
     this.data.entries = e.length > MAX_ENTRIES ? e.slice(-MAX_ENTRIES) : e;
   }
 
@@ -237,7 +256,7 @@ export class Journal {
     const last = [...list].reverse().find((x) => x.project === e.project);
     const sig = (x) => JSON.stringify([x.kind, x.hash, x.from, x.to, x.count, x.files, x.agent, x.sub, x.note]);
     if (last && sig(last) === sig(e)) return false;
-    if (last && e.kind === 'dirty' && last.kind === 'dirty' && t - last.t < COALESCE_MS && last.by === e.by) Object.assign(last, e);
+    if (last && e.kind === 'dirty' && last.kind === 'dirty' && last.by === e.by && (t - last.t < COALESCE_MS || sharesFile(last, e))) Object.assign(last, e);
     else list.push(e);
     this.#prune();
     this.#save();

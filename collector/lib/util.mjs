@@ -50,3 +50,18 @@ export function safeStat(p) {
 export function safeReaddir(p) {
   try { return fs.readdirSync(p, { withFileTypes: true }); } catch { return []; }
 }
+
+// ---- Build/cache paths that are not "work" (edit these lists to tune what the journal, digest, Work cards and Activity ignore) ----
+// A path is noise when any whole segment equals one of these names, or starts with one of the prefixes.
+export const NOISE_SEGMENTS = ['target', 'node_modules', 'dist', 'build', 'out', '.next', '.cache', '__pycache__', '.venv', 'venv', '.gradle', '.idea', '.vs'];
+export const NOISE_SEGMENT_PREFIXES = ['target-'];
+// File names (last segment) that are noise wherever they live.
+export const NOISE_FILES = [/^\.rustc_info\.json$/i, /\.(pyc|tmp|log|obj|o|pdb)$/i];
+
+/** True for build output / cache paths (relative, either slash). Only whole path segments match: src/target.rs and docs/build-notes.md are real. */
+export function isNoisePath(relPath) {
+  const segs = String(relPath || '').replace(/\\/g, '/').split('/').filter(Boolean);
+  if (!segs.length) return false;
+  if (segs.some((s) => NOISE_SEGMENTS.includes(s) || NOISE_SEGMENT_PREFIXES.some((x) => s.startsWith(x)))) return true;
+  return NOISE_FILES.some((r) => r.test(segs[segs.length - 1]));
+}

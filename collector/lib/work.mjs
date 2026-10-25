@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { safeReaddir, safeStat, normPath } from './util.mjs';
+import { safeReaddir, safeStat, normPath, isNoisePath } from './util.mjs';
 import { GitActivityCache, parseGithubRemote } from './gitactivity.mjs';
 
 const run = promisify(execFile);
@@ -168,12 +168,13 @@ export class WorkMap {
         p.github = gh ? `${gh[1]}/${gh[2]}` : null;
         const lines = st.split('\n').filter(Boolean);
         const head = lines.shift() || '';
+        const real = lines.filter((l) => !isNoisePath(porcelainPath(l))); // build output is not work
         const m = head.match(/^## ([^.\s]+)(?:\.\.\.\S+)?(?: \[(.+)\])?/);
         const [hash, subject, when, full] = lg.trim().split('\x1f');
         p.git = {
           branch: m?.[1] || '?',
           tracking: m?.[2] || '',
-          changed: lines.length,
+          changed: real.length,
           last: hash ? { hash, subject, t: Date.parse(when) } : null,
         };
         // Commits and pushes for GitHub projects: local git only, cached until HEAD or the refs move.
@@ -191,7 +192,7 @@ export class WorkMap {
           }
           // Untracked folders are collapsed in the summary; list their files so names (and noise/secret filtering) are real.
           const all = await run('git', ['status', '--porcelain=v1', '-uall'], opts).then((r) => r.stdout.split('\n').filter(Boolean).slice(0, 300)).catch(() => lines);
-          hook.onUpdate?.(p, { head: full || '', branch: p.git.branch, changed: lines.length, paths: all.map(porcelainPath), commits });
+          hook.onUpdate?.(p, { head: full || '', branch: p.git.branch, changed: real.length, paths: all.map(porcelainPath), commits });
         }
       } catch {
         p.git = p.git || null;

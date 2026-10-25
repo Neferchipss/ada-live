@@ -8,6 +8,7 @@ import { ChatHub } from '../collector/lib/chat.mjs';
 import { FullModePolicy, createPinHash } from '../collector/lib/fullmode.mjs';
 import { LimitTracker } from '../collector/lib/limits.mjs';
 import { WorkMap } from '../collector/lib/work.mjs';
+import { isNoisePath } from '../collector/lib/util.mjs';
 import { Journal, activeMap, attribute, buildDigest, findConflict, isSecretName, liveLine, locate } from '../collector/lib/journal.mjs';
 
 const PIN = '123456';
@@ -431,4 +432,42 @@ test('the system prompt explains the digest, the notes file and busy folders', a
   assert.match(sys, /terminal/i);
   assert.match(sys, /projects[\\/]<name>\.md/);
   assert.match(sys, /busy/);
+});
+
+test('isNoisePath matches build/cache segments only', () => {
+  for (const p of ['target-before/.rustc_info.json', 'target/debug/x', 'node_modules/x/y', 'a/dist/b.js', 'web/.next/c', 'x/__pycache__/m.pyc', 'src/a.pyc', 'run.log', 'a\\build\\o.obj', 'x.tmp', 'p/.venv/bin']) assert.equal(isNoisePath(p), true, p);
+  for (const p of ['src/target.rs', 'docs/build-notes.md', 'src/output.rs', 'README.md', 'lib/outer/a.js', '']) assert.equal(isNoisePath(p), false, p);
+});
+
+test('repeated dirty cycles fold into one entry; commit starts a new one; build paths never listed', () => {
+  const clock = { t: NOW };
+  const j = new Journal({ file: path.join(tmp('ada-j-'), 'j.json'), now: () => clock.t });
+  const p = { name: 'ge-before', path: tmp('ada-p-') };
+  j.observeGit(p, { head: 'h1', branch: 'main', paths: [] });
+  const junk = Array.from({ length: 300 }, (_, i) => `target-before/f${i}.o`);
+  j.observeGit(p, { head: 'h1', branch: 'main', paths: junk });
+  assert.equal(j.recent().length, 0, 'only build output: nothing recorded');
+  for (let i = 0; i < 10; i++) {
+    clock.t += 15 * 60e3;
+    j.observeGit(p, { head: 'h1', branch: 'main', paths: ['src/a.rs', 'src/b.rs', ...junk.slice(0, i), ...Array.from({ length: i }, (_, k) => `src/n${k}.rs`)] });
+  }
+  const e = j.recent();
+  assert.equal(e.length, 1, '10 cycles -> 1 entry');
+  assert.equal(e[0].count, 11);
+  assert.equal(e[0].t, clock.t);
+  assert.ok(e[0].files.every((f) => !f.startsWith('target')));
+  j.observeGit(p, { head: 'h2', branch: 'main', paths: ['src/a.rs'], commits: [{ hash: 'abcdef1', subject: 'x', ct: 1 }] });
+  clock.t += 15 * 60e3;
+  j.observeGit(p, { head: 'h2', branch: 'main', paths: ['src/a.rs', 'src/z.rs'] });
+  assert.deepEqual(j.recent().map((x) => x.kind), ['dirty', 'commit', 'dirty'], 'dirty after a commit is a new line');
+});
+
+test('digest has one uncommitted line per project with at most 3 real paths', () => {
+  const d = buildDigest([
+    { t: 5, project: 'p', kind: 'dirty', count: 9, files: ['a', 'target-before/x', 'b', 'c', 'd'], by: 'unknown' },
+    { t: 4, project: 'p', kind: 'dirty', count: 3, files: ['a'], by: 'unknown' },
+  ], { since: 0 });
+  assert.equal(d.split(String.fromCharCode(10)).filter((l) => /uncommitted/.test(l)).length, 1);
+  assert.match(d, /9 uncommitted files: a, b, c \[/);
+  assert.doesNotMatch(d, /target-before/);
 });
